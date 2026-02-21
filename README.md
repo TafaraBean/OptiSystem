@@ -1,6 +1,6 @@
 # OptiSystem
 
-OptiSystem is a lightweight, interactive personal productivity hub and study engine built with Python and Shiny. It is designed to help you manage project objectives, visualize complex concepts through dynamic mind maps, and systematically track your study metrics using spaced-repetition flashcards.
+OptiSystem is a lightweight, interactive personal productivity hub and study engine built with Python and Shiny. It is designed to help you manage project objectives, visualize complex concepts through dynamic mind maps, and systematically track your study metrics 
 
 ## 🚀 Features
 
