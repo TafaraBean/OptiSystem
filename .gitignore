@@ -1,0 +1,14 @@
+# Exclude your virtual environment and personal local data
+/.venv/
+/OptiSystem_Data/
+
+# Exclude compiled Python files (these generate automatically and clutter your repo)
+__pycache__/
+*.pyc
+*.pyo
+
+# Exclude environment variables (crucial for when you add database passwords later)
+.env
+
+# Exclude OS-specific hidden files (if you or your friends use a Mac)
+.DS_Store
