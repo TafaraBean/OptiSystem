@@ -21,6 +21,9 @@ custom_js = """
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
 
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css">
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+
 <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3@6"></script>
 <script src="https://cdn.jsdelivr.net/npm/markmap-view@0.14.4"></script>
@@ -28,14 +31,35 @@ custom_js = """
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <style>
-    .CodeMirror { height: auto; min-height: 200px; }
-    .CodeMirror-scroll { min-height: 200px; max-height: 450px; overflow-y: auto; }
+    /* BULLETPROOF EASYMDE SCROLLING */
+    .CodeMirror { 
+        max-height: 400px !important; 
+    }
+    .CodeMirror-scroll { 
+        min-height: 200px !important; 
+        max-height: 400px !important; 
+        overflow-y: auto !important; 
+        overflow-x: hidden !important;
+    }
+    
     #mindmap { width: 100%; height: 650px; border: 1px solid #ddd; border-radius: 8px; }
     svg { width: 100%; height: 100%; } 
     foreignObject { overflow: visible; }
     img { max-width: 350px; max-height: 350px; border: 2px solid #555; border-radius: 6px; display: block; }
     
     .katex-mathml { display: none !important; }
+
+    /* Force bold text to actually render bold and strictly not slanted */
+    #mindmap strong, #mindmap b { 
+        font-weight: 900 !important; 
+        font-style: normal !important; 
+        color: #000 !important;
+    }
+
+    /* FIX FOR OVERFLOW: Force text to stay on a single line so it doesn't wrap and overlap */
+    #mindmap foreignObject div { 
+        white-space: nowrap !important; 
+    }
     
     .slide-content img { margin: 0 auto; }
     .slide-container { transition: all 0.3s ease-in-out; }
@@ -51,7 +75,14 @@ custom_js = """
         const transformer = new Transformer();
         const { root } = transformer.transform(markdown);
         document.getElementById('mindmap').innerHTML = ''; 
-        const mm = markmap.Markmap.create('#mindmap', null, root);
+        
+        // Tell the map to space things out (removed maxWidth to prevent wrapping)
+        const mapOptions = {
+            spacingHorizontal: 140, // Pushes branches further apart
+            spacingVertical: 15     // Adds vertical breathing room between nodes
+        };
+        
+        const mm = markmap.Markmap.create('#mindmap', mapOptions, root);
         mm.fit(); 
     }
 
@@ -63,7 +94,40 @@ custom_js = """
                     element: textArea,
                     spellChecker: false,
                     status: false,
-                    toolbar: ["bold", "italic", "heading", "|", "quote", "unordered-list", "ordered-list", "|", "link", "image", "|", "guide"]
+                    renderingConfig: {
+                        codeSyntaxHighlighting: true
+                    },
+                    toolbar: [
+                        "bold", "italic", "heading", "|", 
+                        {
+                            name: "highlight",
+                            action: function customFunction(editor){
+                                const cm = editor.codemirror;
+                                const text = cm.getSelection();
+                                if (text) {
+                                    cm.replaceSelection("<mark style='background-color: #ffeb3b; color: black; padding: 0 4px; border-radius: 3px;'>" + text + "</mark>");
+                                }
+                            },
+                            className: "fa fa-paint-brush",
+                            title: "Highlight Text",
+                        },
+                        {
+                            name: "textColor",
+                            action: function customFunction(editor){
+                                const cm = editor.codemirror;
+                                const text = cm.getSelection();
+                                if (text) {
+                                    const color = prompt("Enter a color (e.g., red, blue, #00ff00):", "red");
+                                    if(color) {
+                                        cm.replaceSelection("<span style='color: " + color + "; font-weight: bold;'>" + text + "</span>");
+                                    }
+                                }
+                            },
+                            className: "fa fa-font",
+                            title: "Change Text Color",
+                        },
+                        "|", "quote", "code", "unordered-list", "ordered-list", "|", "link", "image", "|", "guide"
+                    ]
                 });
                 window.easymde_editor = easymde; 
 
@@ -274,7 +338,7 @@ app_ui = ui.page_navbar(
         )
     ),
 
-    # TAB 5: REVISION HUB
+    # TAB 5: REVISION Hub
     ui.nav_panel("Revision Hub",
         ui.layout_sidebar(
             ui.sidebar(
