@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import base64
 import time
+import re
 from datetime import datetime
 from shiny import App, render, ui, reactive
 
@@ -42,7 +43,9 @@ custom_js = """
         overflow-x: hidden !important;
     }
     
-    #mindmap { width: 100%; height: 650px; border: 1px solid #ddd; border-radius: 8px; }
+    #mindmap { width: 100%; height: 650px; border: 1px solid #ddd; border-radius: 8px; cursor: grab; background-color: #fff; }
+    #mindmap:active { cursor: grabbing; }
+    
     svg { width: 100%; height: 100%; } 
     foreignObject { overflow: visible; }
     img { max-width: 350px; max-height: 350px; border: 2px solid #555; border-radius: 6px; display: block; }
@@ -67,16 +70,21 @@ custom_js = """
     .kpi-card { text-align: center; padding: 20px 10px; border-radius: 8px; background: #f8f9fa; border: 1px solid #dee2e6; }
     .kpi-val { font-size: 2em; font-weight: bold; color: #0d6efd; margin: 10px 0; }
     .kpi-title { font-size: 1em; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; }
+    
+    /* Blurt Studio Review Heights */
+    .blurt-review-panel { max-height: 600px; overflow-y: auto; padding: 15px; background: #fff; border-radius: 5px; border: 1px solid #eee; }
 </style>
 
 <script>
+    // RESTORED: The exact brute-force method that allows you to pan around successfully
     function updateMindMap(markdown) {
         const { Transformer } = window.markmap;
         const transformer = new Transformer();
         const { root } = transformer.transform(markdown);
+        
+        // Wipe the canvas clean every time to reset the D3 event listeners
         document.getElementById('mindmap').innerHTML = ''; 
         
-        // Tell the map to space things out (removed maxWidth to prevent wrapping)
         const mapOptions = {
             spacingHorizontal: 140, // Pushes branches further apart
             spacingVertical: 15     // Adds vertical breathing room between nodes
@@ -360,7 +368,26 @@ app_ui = ui.page_navbar(
             )
         )
     ),
-    title="OptiSystem v6.8",
+    
+    # TAB 6: BLURT STUDIO
+    ui.nav_panel("Blurt Studio",
+        ui.layout_sidebar(
+            ui.sidebar(
+                ui.markdown("### **Active Recall**"),
+                ui.input_select("blurt_mod_select", "Select Module", get_module_names()),
+                ui.output_ui("blurt_map_loader_ui"),
+                ui.input_action_button("start_blurt_btn", "Generate Template", class_="btn-primary w-100"),
+                ui.hr(),
+                ui.input_action_button("review_blurt_btn", "Submit & Review", class_="btn-success w-100"),
+                ui.input_action_button("reset_blurt_btn", "Reset Session", class_="btn-danger w-100 mt-2")
+            ),
+            ui.card(
+                ui.output_ui("blurt_main_area_ui")
+            )
+        )
+    ),
+    
+    title="OptiSystem v6.12",
 )
 
 # --- SERVER ---
@@ -371,6 +398,11 @@ def server(input, output, session):
     rev_slides = reactive.Value([])
     rev_current_idx = reactive.Value(0)
     rev_start_time = reactive.Value(0.0)
+    
+    # Blurt Studio State
+    blurt_state = reactive.Value("setup") 
+    blurt_original = reactive.Value("")
+    blurt_template = reactive.Value("")
 
     # ==========================
     # DASHBOARD LOGIC 
@@ -505,7 +537,7 @@ def server(input, output, session):
                 ui.update_select("mod_select", selected=row['Module'])
                 ui.update_slider("progress_val", value=int(row['Progress']))
                 try:
-                    ui.update_date("due_date", value=pd.to_datetime(row['Deadline'], dayfirst=True, format='mixed').date())
+                    ui.update_date("due_date", value=pd.to_datetime(row['Deadline'], errors='coerce').date())
                 except: pass 
             except: pass
 
@@ -549,6 +581,7 @@ def server(input, output, session):
             ui.update_select("mod_select", choices=mods)
             ui.update_select("map_mod", choices=mods)
             ui.update_select("rev_mod_select", choices=mods)
+            ui.update_select("blurt_mod_select", choices=mods)
 
     @output
     @render.ui
@@ -556,7 +589,8 @@ def server(input, output, session):
         refresh_trigger()
         df = load_tasks()
         if df.empty: return ui.markdown("No active objectives.")
-        df['Deadline_dt'] = pd.to_datetime(df['Deadline'], dayfirst=True, format='mixed', errors='coerce').fillna(pd.Timestamp("2099-12-31"))
+        
+        df['Deadline_dt'] = pd.to_datetime(df['Deadline'], errors='coerce').fillna(pd.Timestamp("2099-12-31"))
         df = df.sort_values(by='Deadline_dt').reset_index(drop=True)
         ui_list = []
         for _, row in df.iterrows():
@@ -767,5 +801,111 @@ def server(input, output, session):
             ui.p(ui.tags.b("Total Time Studied: "), f"{round(total_time, 1)} mins"),
             ui.p(ui.tags.b("Last Revised: "), f"{last_mod}")
         )
+
+    # ==========================
+    # BLURT STUDIO LOGIC 
+    # ==========================
+    @output
+    @render.ui
+    def blurt_map_loader_ui():
+        refresh_trigger()
+        maps = get_saved_maps(input.blurt_mod_select())
+        if not maps: return ui.markdown("_No saved maps_")
+        return ui.input_select("blurt_selected_map", "Select Map to Blurt", maps)
+
+    @reactive.Effect
+    @reactive.event(input.start_blurt_btn)
+    def _start_blurt():
+        mod = input.blurt_mod_select()
+        map_name = input.blurt_selected_map()
+        if not map_name:
+            ui.notification_show("No map selected.", type="error")
+            return
+
+        path = os.path.join(BASE_PATH, mod, map_name)
+        if not os.path.exists(path): return
+
+        with open(path, "r") as f:
+            content = f.read()
+
+        blurt_original.set(content)
+
+        # Generate template by extracting headers and handling images
+        lines = content.split('\n')
+        template_lines = []
+        for line in lines:
+            if line.strip().startswith('#'):
+                # Replace markdown images with a text prompt to recall what the image was
+                clean_line = re.sub(r'!\[.*?\]\(.*?\)', '[Image Reference]', line).strip()
+                
+                # Check if there is still content left (ignores headers that were somehow reduced to just '#')
+                if clean_line.replace('#', '').strip():
+                    template_lines.append(clean_line)
+                    template_lines.append("\n\n\n")
+
+        blurt_template.set("".join(template_lines))
+        blurt_state.set("blurting")
+        ui.notification_show("Template Generated! Start recalling.", type="message")
+
+    @reactive.Effect
+    @reactive.event(input.review_blurt_btn)
+    def _review_blurt():
+        if blurt_state() == "blurting":
+            blurt_state.set("review")
+            ui.notification_show("Review Mode Activated", type="warning")
+        else:
+            ui.notification_show("Generate a template first.", type="error")
+
+    @reactive.Effect
+    @reactive.event(input.reset_blurt_btn)
+    def _reset_blurt():
+        blurt_state.set("setup")
+        blurt_original.set("")
+        blurt_template.set("")
+        ui.notification_show("Session Reset", type="message")
+
+    @output
+    @render.ui
+    async def blurt_main_area_ui():
+        state = blurt_state()
+
+        if state == "setup":
+            return ui.div(
+                ui.h4("Active Recall Sandbox", class_="text-center mt-4 text-muted"),
+                ui.p("Select a map and click 'Generate Template' to extract headers and start your blurt session.", class_="text-center text-muted"),
+                style="min-height: 400px; display: flex; flex-direction: column; justify-content: center;"
+            )
+            
+        elif state == "blurting":
+            return ui.div(
+                ui.card_header("🧠 Active Recall: Type what you remember under each heading"),
+                ui.input_text_area(
+                    "blurt_input", 
+                    label=None, 
+                    value=blurt_template(), 
+                    width="100%", 
+                    height="600px"
+                )
+            )
+            
+        elif state == "review":
+            await session.send_custom_message("render_katex", None)
+            return ui.layout_columns(
+                ui.card(
+                    ui.card_header(ui.tags.b("✍️ Your Blurt")),
+                    ui.div(
+                        ui.markdown(input.blurt_input()),
+                        class_="blurt-review-panel"
+                    )
+                ),
+                ui.card(
+                    ui.card_header(ui.tags.b("📚 Original Source")),
+                    ui.div(
+                        ui.markdown(blurt_original()),
+                        class_="blurt-review-panel"
+                    )
+                ),
+                col_widths=(6, 6)
+            )
 
 app = App(app_ui, server, static_assets={"/files": BASE_PATH})
