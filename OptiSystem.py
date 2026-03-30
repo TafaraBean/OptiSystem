@@ -32,64 +32,33 @@ custom_js = """
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <style>
-    /* BULLETPROOF EASYMDE SCROLLING */
-    .CodeMirror { 
-        max-height: 400px !important; 
-    }
-    .CodeMirror-scroll { 
-        min-height: 200px !important; 
-        max-height: 400px !important; 
-        overflow-y: auto !important; 
-        overflow-x: hidden !important;
-    }
-    
+    .CodeMirror { max-height: 400px !important; }
+    .CodeMirror-scroll { min-height: 200px !important; max-height: 400px !important; overflow-y: auto !important; overflow-x: hidden !important; }
     #mindmap { width: 100%; height: 650px; border: 1px solid #ddd; border-radius: 8px; cursor: grab; background-color: #fff; }
     #mindmap:active { cursor: grabbing; }
-    
     svg { width: 100%; height: 100%; } 
     foreignObject { overflow: visible; }
     img { max-width: 350px; max-height: 350px; border: 2px solid #555; border-radius: 6px; display: block; }
-    
     .katex-mathml { display: none !important; }
-
-    /* Force bold text to actually render bold and strictly not slanted */
-    #mindmap strong, #mindmap b { 
-        font-weight: 900 !important; 
-        font-style: normal !important; 
-        color: #000 !important;
-    }
-
-    /* FIX FOR OVERFLOW: Force text to stay on a single line so it doesn't wrap and overlap */
-    #mindmap foreignObject div { 
-        white-space: nowrap !important; 
-    }
-    
+    #mindmap strong, #mindmap b { font-weight: 900 !important; font-style: normal !important; color: #000 !important; }
+    #mindmap foreignObject div { white-space: nowrap !important; }
     .slide-content img { margin: 0 auto; }
     .slide-container { transition: all 0.3s ease-in-out; }
-    
     .kpi-card { text-align: center; padding: 20px 10px; border-radius: 8px; background: #f8f9fa; border: 1px solid #dee2e6; }
-    .kpi-val { font-size: 2em; font-weight: bold; color: #0d6efd; margin: 10px 0; }
+    .kpi-val { font-size: 2em; font-weight: bold; margin: 10px 0; }
+    .kpi-val.retrieval { color: #198754; }
+    .kpi-val.encoding { color: #0dcaf0; }
     .kpi-title { font-size: 1em; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; }
-    
-    /* Blurt Studio Review Heights */
     .blurt-review-panel { max-height: 600px; overflow-y: auto; padding: 15px; background: #fff; border-radius: 5px; border: 1px solid #eee; }
 </style>
 
 <script>
-    // RESTORED: The exact brute-force method that allows you to pan around successfully
     function updateMindMap(markdown) {
         const { Transformer } = window.markmap;
         const transformer = new Transformer();
         const { root } = transformer.transform(markdown);
-        
-        // Wipe the canvas clean every time to reset the D3 event listeners
         document.getElementById('mindmap').innerHTML = ''; 
-        
-        const mapOptions = {
-            spacingHorizontal: 140, // Pushes branches further apart
-            spacingVertical: 15     // Adds vertical breathing room between nodes
-        };
-        
+        const mapOptions = { spacingHorizontal: 140, spacingVertical: 15 };
         const mm = markmap.Markmap.create('#mindmap', mapOptions, root);
         mm.fit(); 
     }
@@ -99,46 +68,11 @@ custom_js = """
             const textArea = document.getElementById('map_content');
             if (textArea) {
                 const easymde = new EasyMDE({ 
-                    element: textArea,
-                    spellChecker: false,
-                    status: false,
-                    renderingConfig: {
-                        codeSyntaxHighlighting: true
-                    },
-                    toolbar: [
-                        "bold", "italic", "heading", "|", 
-                        {
-                            name: "highlight",
-                            action: function customFunction(editor){
-                                const cm = editor.codemirror;
-                                const text = cm.getSelection();
-                                if (text) {
-                                    cm.replaceSelection("<mark style='background-color: #ffeb3b; color: black; padding: 0 4px; border-radius: 3px;'>" + text + "</mark>");
-                                }
-                            },
-                            className: "fa fa-paint-brush",
-                            title: "Highlight Text",
-                        },
-                        {
-                            name: "textColor",
-                            action: function customFunction(editor){
-                                const cm = editor.codemirror;
-                                const text = cm.getSelection();
-                                if (text) {
-                                    const color = prompt("Enter a color (e.g., red, blue, #00ff00):", "red");
-                                    if(color) {
-                                        cm.replaceSelection("<span style='color: " + color + "; font-weight: bold;'>" + text + "</span>");
-                                    }
-                                }
-                            },
-                            className: "fa fa-font",
-                            title: "Change Text Color",
-                        },
-                        "|", "quote", "code", "unordered-list", "ordered-list", "|", "link", "image", "|", "guide"
-                    ]
+                    element: textArea, spellChecker: false, status: false,
+                    renderingConfig: { codeSyntaxHighlighting: true },
+                    toolbar: ["bold", "italic", "heading", "|", "quote", "code", "unordered-list", "ordered-list", "|", "link", "image", "|", "guide"]
                 });
                 window.easymde_editor = easymde; 
-
                 let timeout = null;
                 easymde.codemirror.on("change", function() {
                     clearTimeout(timeout);
@@ -165,6 +99,7 @@ custom_js = """
                         }
                     }
                 });
+
                 updateMindMap(easymde.value());
             }
         }, 1000); 
@@ -178,37 +113,26 @@ custom_js = """
     Shiny.addCustomMessageHandler('render_katex', function(msg) {
         setTimeout(function() {
             if (window.renderMathInElement) {
-                renderMathInElement(document.body, {
-                    delimiters: [
-                        {left: '$$', right: '$$', display: true},
-                        {left: '$', right: '$', display: false}
-                    ]
-                });
+                renderMathInElement(document.body, { delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}] });
             }
         }, 50); 
     });
 
-    // Dashboard Charting Engine (Chart.js)
     window.optiCharts = {};
     Shiny.addCustomMessageHandler('update_dashboard_charts', function(payload) {
         const d_ctx = document.getElementById('dailyChart');
         if(d_ctx) {
             if(window.optiCharts.daily) window.optiCharts.daily.destroy();
             window.optiCharts.daily = new Chart(d_ctx, {
-                type: 'line',
+                type: 'bar',
                 data: {
                     labels: payload.d_labels,
-                    datasets: [{ label: 'Minutes Studied', data: payload.d_data, borderColor: '#198754', backgroundColor: 'rgba(25, 135, 84, 0.1)', fill: true, tension: 0.3 }]
+                    datasets: [
+                        { label: 'Retrieval (Blurt/Revise)', data: payload.d_retrieval, backgroundColor: '#198754' },
+                        { label: 'Encoding (Notes)', data: payload.d_encoding, backgroundColor: '#0dcaf0' }
+                    ]
                 },
-                options: { 
-                    responsive: true, 
-                    maintainAspectRatio: false, 
-                    plugins: { legend: { display: false } }, 
-                    scales: { 
-                        y: { beginAtZero: true, title: { display: true, text: 'Minutes' } },
-                        x: { title: { display: true, text: 'Date' } }
-                    } 
-                }
+                options: { responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true }, y: { stacked: true, title: { display: true, text: 'Minutes' } } } }
             });
         }
         
@@ -216,20 +140,15 @@ custom_js = """
         if(w_ctx) {
             if(window.optiCharts.weekly) window.optiCharts.weekly.destroy();
             window.optiCharts.weekly = new Chart(w_ctx, {
-                type: 'line',
+                type: 'bar',
                 data: {
                     labels: payload.w_labels,
-                    datasets: [{ label: 'Minutes Studied', data: payload.w_data, borderColor: '#fd7e14', backgroundColor: 'rgba(253, 126, 20, 0.1)', fill: true, tension: 0.3 }]
+                    datasets: [
+                        { label: 'Retrieval (Blurt/Revise)', data: payload.w_retrieval, backgroundColor: '#198754' },
+                        { label: 'Encoding (Notes)', data: payload.w_encoding, backgroundColor: '#0dcaf0' }
+                    ]
                 },
-                options: { 
-                    responsive: true, 
-                    maintainAspectRatio: false, 
-                    plugins: { legend: { display: false } }, 
-                    scales: { 
-                        y: { beginAtZero: true, title: { display: true, text: 'Minutes' } },
-                        x: { title: { display: true, text: 'Week' } }
-                    } 
-                }
+                options: { responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true }, y: { stacked: true, title: { display: true, text: 'Minutes' } } } }
             });
         }
     });
@@ -250,9 +169,13 @@ def load_tasks():
 
 def load_revisions():
     if os.path.exists(REV_LOG):
-        try: return pd.read_csv(REV_LOG)
+        try: 
+            df = pd.read_csv(REV_LOG)
+            if "Activity" not in df.columns:
+                df["Activity"] = "Revision"
+            return df
         except: pass
-    return pd.DataFrame(columns=["Module", "Map", "Date", "Duration (min)"])
+    return pd.DataFrame(columns=["Module", "Map", "Date", "Duration (min)", "Activity"])
 
 def get_module_names():
     if not os.path.exists(BASE_PATH): return ["General"]
@@ -268,33 +191,27 @@ def get_saved_maps(module):
 app_ui = ui.page_navbar(
     ui.head_content(ui.HTML(custom_js)), 
 
-    # TAB 1: DASHBOARD
     ui.nav_panel("Analytics Dashboard",
         ui.layout_columns(
-            ui.div(ui.output_ui("kpi_today_ui"), class_="kpi-card"),
-            ui.div(ui.output_ui("kpi_week_ui"), class_="kpi-card"),
-            ui.div(ui.output_ui("kpi_avg_ui"), class_="kpi-card"),
+            ui.div(ui.output_ui("kpi_encoding_ui"), class_="kpi-card"),
+            ui.div(ui.output_ui("kpi_retrieval_ui"), class_="kpi-card"),
+            ui.div(ui.output_ui("kpi_ratio_ui"), class_="kpi-card"),
             col_widths=(4, 4, 4)
         ),
         ui.br(),
-        ui.card(
-            ui.card_header(ui.tags.b("Module Time Distribution (All Time)")),
-            ui.output_ui("html_module_bars")
-        ),
         ui.layout_columns(
             ui.card(
-                ui.card_header(ui.tags.b("Daily Study Trend")),
+                ui.card_header(ui.tags.b("Daily Phase Split")),
                 ui.HTML('<div style="position: relative; height: 300px; width: 100%;"><canvas id="dailyChart"></canvas></div>')
             ),
             ui.card(
-                ui.card_header(ui.tags.b("Weekly Study Trend")),
+                ui.card_header(ui.tags.b("Weekly Phase Split")),
                 ui.HTML('<div style="position: relative; height: 300px; width: 100%;"><canvas id="weeklyChart"></canvas></div>')
             ),
             col_widths=(6, 6)
         )
     ),
 
-    # TAB 2: COMMAND CENTER
     ui.nav_panel("Command Center",
         ui.layout_sidebar(
             ui.sidebar(
@@ -318,25 +235,26 @@ app_ui = ui.page_navbar(
         )
     ),
 
-    # TAB 3: PROGRESS TRACKER
     ui.nav_panel("Progress Tracker",
         ui.card(ui.output_ui("progress_bars_list"))
     ),
 
-    # TAB 4: STUDY LAB
     ui.nav_panel("Study Lab",
         ui.layout_sidebar(
             ui.sidebar(
                 ui.markdown("### **Concept Architect**"),
                 ui.input_select("map_mod", "Select Module", get_module_names()),
-                ui.markdown("---"),
                 ui.output_ui("map_loader_ui"),
                 ui.input_action_button("load_btn", "Load Map", class_="btn-light w-100 mb-2"),
-                ui.markdown("---"),
+                ui.hr(),
                 ui.input_text("save_name", "File Name", placeholder="e.g., SAS_Unit_1"),
                 ui.input_action_button("save_btn", "Save Map", class_="btn-primary w-100 mb-2"),
                 ui.hr(),
-                ui.input_text_area("map_content", None, height="300px", 
+                ui.markdown("### **Session Timer**"),
+                ui.input_action_button("start_sl_btn", "Start Note-taking", class_="btn-info w-100 mb-2"),
+                ui.input_action_button("end_sl_btn", "End Session & Log", class_="btn-danger w-100"),
+                ui.hr(),
+                ui.input_text_area("map_content", None, height="200px", 
                     value="# Central Concept\n## Branch 1\n- Detail A\n\n- Example Math: $y_i$"),
             ),
             ui.card(
@@ -346,7 +264,6 @@ app_ui = ui.page_navbar(
         )
     ),
 
-    # TAB 5: REVISION Hub
     ui.nav_panel("Revision Hub",
         ui.layout_sidebar(
             ui.sidebar(
@@ -358,51 +275,48 @@ app_ui = ui.page_navbar(
                 ui.markdown("### **Quick Stats**"),
                 ui.output_ui("rev_quick_stats_ui")
             ),
-            ui.card(
-                ui.card_header("Slide Viewer"),
-                ui.output_ui("revision_display_ui")
-            ),
-            ui.card(
-                ui.card_header("Recent Sessions"),
-                ui.output_table("revision_history_table")
-            )
+            ui.card(ui.card_header("Slide Viewer"), ui.output_ui("revision_display_ui")),
+            ui.card(ui.card_header("Recent Sessions"), ui.output_table("revision_history_table"))
         )
     ),
     
-    # TAB 6: BLURT STUDIO
     ui.nav_panel("Blurt Studio",
         ui.layout_sidebar(
             ui.sidebar(
                 ui.markdown("### **Active Recall**"),
                 ui.input_select("blurt_mod_select", "Select Module", get_module_names()),
                 ui.output_ui("blurt_map_loader_ui"),
-                ui.input_action_button("start_blurt_btn", "Generate Template", class_="btn-primary w-100"),
+                ui.input_action_button("start_blurt_btn", "Generate Template & Start Timer", class_="btn-primary w-100"),
                 ui.hr(),
-                ui.input_action_button("review_blurt_btn", "Submit & Review", class_="btn-success w-100"),
+                ui.input_action_button("review_blurt_btn", "Submit, Review & Log Time", class_="btn-success w-100"),
                 ui.input_action_button("reset_blurt_btn", "Reset Session", class_="btn-danger w-100 mt-2")
             ),
-            ui.card(
-                ui.output_ui("blurt_main_area_ui")
-            )
+            ui.card(ui.output_ui("blurt_main_area_ui"))
         )
     ),
     
-    title="OptiSystem v6.12",
+    title="OptiSystem v6.16",
 )
 
 # --- SERVER ---
 def server(input, output, session):
     refresh_trigger = reactive.Value(0)
     
+    # Study Lab Timers
+    sl_active = reactive.Value(False)
+    sl_start_time = reactive.Value(0.0)
+
+    # Revision Hub Timers
     rev_active = reactive.Value(False)
     rev_slides = reactive.Value([])
     rev_current_idx = reactive.Value(0)
     rev_start_time = reactive.Value(0.0)
     
-    # Blurt Studio State
+    # Blurt Studio Timers
     blurt_state = reactive.Value("setup") 
     blurt_original = reactive.Value("")
     blurt_template = reactive.Value("")
+    blurt_start_time = reactive.Value(0.0)
 
     # ==========================
     # DASHBOARD LOGIC 
@@ -417,60 +331,43 @@ def server(input, output, session):
 
     @output
     @render.ui
-    def kpi_today_ui():
+    def kpi_encoding_ui():
         refresh_trigger()
         df = get_processed_rev_df()
-        today_val = 0.0
+        val = 0.0
         if not df.empty:
             today = datetime.now().date()
-            today_val = df[df['Date_Only'] == today]['Duration (min)'].sum()
-        return ui.HTML(f"<div class='kpi-title'>Studied Today</div><div class='kpi-val'>{today_val:.1f} <span style='font-size:0.5em'>min</span></div>")
+            val = df[(df['Date_Only'] == today) & (df['Activity'] == "Study Lab")]['Duration (min)'].sum()
+        return ui.HTML(f"<div class='kpi-title'>Encoding Today (Notes)</div><div class='kpi-val encoding'>{val:.1f} <span style='font-size:0.5em'>min</span></div>")
 
     @output
     @render.ui
-    def kpi_week_ui():
+    def kpi_retrieval_ui():
         refresh_trigger()
         df = get_processed_rev_df()
-        week_val = 0.0
+        val = 0.0
         if not df.empty:
-            current_yw = f"{datetime.now().isocalendar()[0]}-W{str(datetime.now().isocalendar()[1]).zfill(2)}"
-            week_val = df[df['YearWeek'] == current_yw]['Duration (min)'].sum()
-        return ui.HTML(f"<div class='kpi-title'>Studied This Week</div><div class='kpi-val'>{week_val:.1f} <span style='font-size:0.5em'>min</span></div>")
+            today = datetime.now().date()
+            val = df[(df['Date_Only'] == today) & (df['Activity'].isin(["Revision", "Blurt"]))]['Duration (min)'].sum()
+        return ui.HTML(f"<div class='kpi-title'>Retrieval Today (Recall)</div><div class='kpi-val retrieval'>{val:.1f} <span style='font-size:0.5em'>min</span></div>")
 
     @output
     @render.ui
-    def kpi_avg_ui():
+    def kpi_ratio_ui():
         refresh_trigger()
         df = get_processed_rev_df()
-        avg_val = df['Duration (min)'].mean() if not df.empty else 0.0
-        return ui.HTML(f"<div class='kpi-title'>Avg Session Length</div><div class='kpi-val'>{avg_val:.1f} <span style='font-size:0.5em'>min</span></div>")
-
-    @output
-    @render.ui
-    def html_module_bars():
-        refresh_trigger()
-        df = load_revisions()
-        if df.empty: return ui.markdown("_No revision data available yet._")
+        if df.empty: return ui.HTML(f"<div class='kpi-title'>Weekly Recall Ratio</div><div class='kpi-val'>0%</div>")
         
-        mod_sum = df.groupby('Module')['Duration (min)'].sum().sort_values(ascending=False)
-        max_val = mod_sum.max()
-        if max_val == 0: max_val = 1 
+        current_yw = f"{datetime.now().isocalendar()[0]}-W{str(datetime.now().isocalendar()[1]).zfill(2)}"
+        week_df = df[df['YearWeek'] == current_yw]
+        enc = week_df[week_df['Activity'] == "Study Lab"]['Duration (min)'].sum()
+        ret = week_df[week_df['Activity'].isin(["Revision", "Blurt"])]['Duration (min)'].sum()
         
-        bars = []
-        for mod, val in mod_sum.items():
-            pct = (val / max_val) * 100
-            bars.append(ui.HTML(f"""
-            <div style="margin-bottom: 15px;">
-                <div style="display: flex; justify-content: space-between; margin-bottom: 4px; font-weight: 500; font-size: 0.9em; color: #333;">
-                    <span>{mod}</span>
-                    <span>{val:.1f} min</span>
-                </div>
-                <div style="width: 100%; background: #e9ecef; border-radius: 4px; height: 24px; overflow: hidden;">
-                    <div style="width: {pct}%; background: #0d6efd; height: 100%; border-radius: 4px; transition: width 0.5s ease-in-out;"></div>
-                </div>
-            </div>
-            """))
-        return ui.div(*bars, style="padding: 10px; min-height: 250px;")
+        total = enc + ret
+        ratio = (ret / total * 100) if total > 0 else 0
+        color = "#198754" if ratio >= 80 else "#fd7e14" if ratio >= 50 else "#dc3545"
+        
+        return ui.HTML(f"<div class='kpi-title'>Weekly Recall Ratio (Goal: 80%)</div><div class='kpi-val' style='color:{color}'>{ratio:.1f}%</div>")
 
     @reactive.Effect
     async def update_line_charts():
@@ -478,97 +375,91 @@ def server(input, output, session):
         df = get_processed_rev_df()
         if df.empty: return
         
-        daily = df.groupby('Date_Only')['Duration (min)'].sum().sort_index()
-        daily_labels = [d.strftime("%b %d") for d in daily.index]
-        daily_data = list(daily.values)
+        # DAILY STATS
+        daily = df.groupby(['Date_Only', 'Activity'])['Duration (min)'].sum().unstack(fill_value=0)
+        if 'Study Lab' not in daily: daily['Study Lab'] = 0
+        if 'Revision' not in daily: daily['Revision'] = 0
+        if 'Blurt' not in daily: daily['Blurt'] = 0
         
-        weekly = df.groupby('YearWeek')['Duration (min)'].sum().sort_index()
-        weekly_labels = list(weekly.index)
-        weekly_data = list(weekly.values)
+        daily_retrieval = daily['Revision'] + daily['Blurt']
         
+        # WEEKLY STATS
+        weekly = df.groupby(['YearWeek', 'Activity'])['Duration (min)'].sum().unstack(fill_value=0)
+        if 'Study Lab' not in weekly: weekly['Study Lab'] = 0
+        if 'Revision' not in weekly: weekly['Revision'] = 0
+        if 'Blurt' not in weekly: weekly['Blurt'] = 0
+            
+        weekly_retrieval = weekly['Revision'] + weekly['Blurt']
+        
+        # .tolist() forces native Python types so JSON serialization doesn't crash
         payload = {
-            "d_labels": daily_labels, "d_data": daily_data,
-            "w_labels": weekly_labels, "w_data": weekly_data
+            "d_labels": [d.strftime("%b %d") for d in daily.index],
+            "d_encoding": daily['Study Lab'].tolist(),
+            "d_retrieval": daily_retrieval.tolist(),
+            
+            "w_labels": list(weekly.index),
+            "w_encoding": weekly['Study Lab'].tolist(),
+            "w_retrieval": weekly_retrieval.tolist()
         }
         await session.send_custom_message("update_dashboard_charts", payload)
 
     # ==========================
-    # COMMAND CENTER LOGIC
+    # COMMAND CENTER & TASKS 
     # ==========================
     @reactive.Effect
     @reactive.event(input.purge_completed)
     def _purge_tasks():
         df = load_tasks()
         if df.empty: return
-        initial_count = len(df)
         df = df[df["Progress"] < 100].reset_index(drop=True)
         df['ID'] = df.index
         df.to_csv(TASK_LOG, index=False)
         refresh_trigger.set(refresh_trigger() + 1)
-        deleted_count = initial_count - len(df)
-        if deleted_count > 0: ui.notification_show(f"Cleared {deleted_count} tasks!")
 
     @output
     @render.ui
     def task_selector_ui():
-        if input.mode() == "edit":
-            df = load_tasks()
-            return ui.input_select("task_to_edit", "Select Task", {str(i): row['Objective'] for i, row in df.iterrows()})
-        return None
+        if input.mode() == "edit": return ui.input_select("task_to_edit", "Select Task", {str(i): row['Objective'] for i, row in load_tasks().iterrows()})
 
     @output
     @render.ui
     def action_button_ui():
-        if input.mode() == "edit":
-            return ui.div(
-                ui.input_action_button("save_edit", "Update Objective", class_="btn-warning w-100 mb-2"),
-                ui.input_action_button("delete_task", "Delete Objective", class_="btn-danger w-100")
-            )
-        return ui.input_action_button("add_task", "Sync New Objective", class_="btn-primary w-100")
+        if input.mode() == "edit": return ui.div(ui.input_action_button("save_edit", "Update", class_="btn-warning w-100 mb-2"), ui.input_action_button("delete_task", "Delete", class_="btn-danger w-100"))
+        return ui.input_action_button("add_task", "Sync", class_="btn-primary w-100")
 
     @reactive.Effect
     @reactive.event(input.task_to_edit)
     def _populate_fields():
         if input.mode() == "edit":
-            df = load_tasks()
             try:
-                row = df.iloc[int(input.task_to_edit())]
+                row = load_tasks().iloc[int(input.task_to_edit())]
                 ui.update_text("task_name", value=row['Objective'])
                 ui.update_select("mod_select", selected=row['Module'])
                 ui.update_slider("progress_val", value=int(row['Progress']))
-                try:
-                    ui.update_date("due_date", value=pd.to_datetime(row['Deadline'], errors='coerce').date())
-                except: pass 
             except: pass
 
     @reactive.Effect
     @reactive.event(input.add_task)
     def _add():
         df = load_tasks()
-        new_row = pd.DataFrame({"ID": [len(df)], "Objective": [input.task_name()], "Module": [input.mod_select()], "Deadline": [str(input.due_date())], "Progress": [input.progress_val()]})
-        pd.concat([df, new_row], ignore_index=True).to_csv(TASK_LOG, index=False)
+        pd.concat([df, pd.DataFrame({"ID": [len(df)], "Objective": [input.task_name()], "Module": [input.mod_select()], "Deadline": [str(input.due_date())], "Progress": [input.progress_val()]})], ignore_index=True).to_csv(TASK_LOG, index=False)
         refresh_trigger.set(refresh_trigger() + 1)
-        ui.notification_show("Objective Added")
 
     @reactive.Effect
     @reactive.event(input.save_edit)
     def _edit():
         df = load_tasks()
-        idx = int(input.task_to_edit())
-        df.loc[idx, ["Objective", "Module", "Deadline", "Progress"]] = [input.task_name(), input.mod_select(), str(input.due_date()), input.progress_val()]
+        df.loc[int(input.task_to_edit()), ["Objective", "Module", "Deadline", "Progress"]] = [input.task_name(), input.mod_select(), str(input.due_date()), input.progress_val()]
         df.to_csv(TASK_LOG, index=False)
         refresh_trigger.set(refresh_trigger() + 1)
-        ui.notification_show("Updated Successfully", type="warning")
 
     @reactive.Effect
     @reactive.event(input.delete_task)
     def _delete():
-        df = load_tasks()
-        df = df.drop(int(input.task_to_edit())).reset_index(drop=True)
+        df = load_tasks().drop(int(input.task_to_edit())).reset_index(drop=True)
         df['ID'] = df.index
         df.to_csv(TASK_LOG, index=False)
         refresh_trigger.set(refresh_trigger() + 1)
-        ui.notification_show("Objective Deleted", type="error")
 
     @reactive.Effect
     @reactive.event(input.create_mod)
@@ -578,10 +469,7 @@ def server(input, output, session):
             os.makedirs(os.path.join(BASE_PATH, name), exist_ok=True)
             refresh_trigger.set(refresh_trigger() + 1)
             mods = get_module_names()
-            ui.update_select("mod_select", choices=mods)
-            ui.update_select("map_mod", choices=mods)
-            ui.update_select("rev_mod_select", choices=mods)
-            ui.update_select("blurt_mod_select", choices=mods)
+            for select_id in ["mod_select", "map_mod", "rev_mod_select", "blurt_mod_select"]: ui.update_select(select_id, choices=mods)
 
     @output
     @render.ui
@@ -589,18 +477,13 @@ def server(input, output, session):
         refresh_trigger()
         df = load_tasks()
         if df.empty: return ui.markdown("No active objectives.")
-        
         df['Deadline_dt'] = pd.to_datetime(df['Deadline'], errors='coerce').fillna(pd.Timestamp("2099-12-31"))
         df = df.sort_values(by='Deadline_dt').reset_index(drop=True)
         ui_list = []
         for _, row in df.iterrows():
-            if row['Deadline_dt'].year == 2099: bar_color, status_text = "bg-secondary", "⚠️ DATE ERROR"
-            else:
-                days_left = (row['Deadline_dt'] - datetime.now()).days + 1
-                if row['Progress'] == 100: bar_color, status_text = "bg-success", "DONE"
-                elif days_left < 0: bar_color, status_text = "bg-dark", f"OVERDUE ({abs(days_left)}d)"
-                elif days_left <= 3: bar_color, status_text = "bg-danger", f"URGENT: {days_left}d left"
-                else: bar_color, status_text = "bg-info", f"{days_left}d left"
+            days_left = (row['Deadline_dt'] - datetime.now()).days + 1
+            bar_color = "bg-success" if row['Progress'] == 100 else "bg-dark" if days_left < 0 else "bg-danger" if days_left <= 3 else "bg-info"
+            status_text = "DONE" if row['Progress'] == 100 else f"OVERDUE ({abs(days_left)}d)" if days_left < 0 else f"{days_left}d left"
             ui_list.append(ui.div(
                 ui.div(ui.tags.b(row['Objective']), ui.span(f" ({row['Module']})", style="color: gray;"), ui.span(status_text, style="float:right; font-weight: bold;")),
                 ui.div(ui.div(f"{row['Progress']}%", class_=f"progress-bar {bar_color}", style=f"width:{row['Progress']}%"), class_="progress", style="height:22px; margin-bottom:18px")
@@ -617,15 +500,38 @@ def server(input, output, session):
     # STUDY LAB LOGIC
     # ==========================
     @reactive.Effect
+    @reactive.event(input.start_sl_btn)
+    def _start_sl():
+        sl_start_time.set(time.time())
+        sl_active.set(True)
+        ui.notification_show("Note-taking session started. Focus up!", type="message")
+
+    @reactive.Effect
+    @reactive.event(input.end_sl_btn)
+    def _end_sl():
+        if not sl_active():
+            ui.notification_show("No active session running.", type="warning")
+            return
+        duration = round((time.time() - sl_start_time()) / 60, 2)
+        df = load_revisions()
+        new_row = pd.DataFrame({
+            "Module": [input.map_mod()],
+            "Map": [input.save_name() if input.save_name() else "Drafting"],
+            "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")],
+            "Duration (min)": [duration],
+            "Activity": ["Study Lab"]
+        })
+        pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
+        sl_active.set(False)
+        refresh_trigger.set(refresh_trigger() + 1)
+        ui.notification_show(f"Logged {duration} minutes of Encoding time.", type="message")
+
+    @reactive.Effect
     @reactive.event(input.save_btn)
     def _save_map():
-        if not input.save_name():
-            ui.notification_show("Please name your file first!", type="error")
-            return
-        filename = input.save_name().strip().replace(" ", "_")
-        if not filename.endswith(".md"): filename += ".md"
-        with open(os.path.join(BASE_PATH, input.map_mod(), filename), "w") as f:
-            f.write(input.map_content())
+        if not input.save_name(): return ui.notification_show("Name your file first!", type="error")
+        filename = input.save_name().strip().replace(" ", "_") + (".md" if not input.save_name().endswith(".md") else "")
+        with open(os.path.join(BASE_PATH, input.map_mod(), filename), "w") as f: f.write(input.map_content())
         refresh_trigger.set(refresh_trigger() + 1)
         ui.notification_show(f"Saved: {filename}", type="message")
 
@@ -634,18 +540,15 @@ def server(input, output, session):
     def map_loader_ui():
         refresh_trigger() 
         maps = get_saved_maps(input.map_mod())
-        if not maps: return ui.markdown("_No saved maps_")
-        return ui.input_select("selected_map", "Load Saved Map", maps)
+        return ui.input_select("selected_map", "Load Saved Map", maps) if maps else ui.markdown("_No saved maps_")
 
     @reactive.Effect
     @reactive.event(input.load_btn)
     async def _load_map():
         try:
-            filename = input.selected_map()
-            with open(os.path.join(BASE_PATH, input.map_mod(), filename), "r") as f: content = f.read()
-            ui.update_text("save_name", value=filename.replace(".md", ""))
+            with open(os.path.join(BASE_PATH, input.map_mod(), input.selected_map()), "r") as f: content = f.read()
+            ui.update_text("save_name", value=input.selected_map().replace(".md", ""))
             await session.send_custom_message("update_editor", content) 
-            ui.notification_show(f"Loaded: {filename}")
         except Exception as e: ui.notification_show(f"Error: {str(e)}", type="error")
 
     @reactive.Effect
@@ -670,46 +573,29 @@ def server(input, output, session):
     def rev_map_loader_ui():
         refresh_trigger()
         maps = get_saved_maps(input.rev_mod_select())
-        if not maps: return ui.markdown("_No saved maps_")
-        return ui.input_select("rev_selected_map", "Select Map to Revise", maps)
+        return ui.input_select("rev_selected_map", "Select Map to Revise", maps) if maps else ui.markdown("_No saved maps_")
 
     @reactive.Effect
     @reactive.event(input.start_rev_btn)
     def _start_revision():
-        mod = input.rev_mod_select()
-        map_name = input.rev_selected_map()
-        if not map_name: return ui.notification_show("No map selected.", type="error")
-        
-        path = os.path.join(BASE_PATH, mod, map_name)
+        if not input.rev_selected_map(): return
+        path = os.path.join(BASE_PATH, input.rev_mod_select(), input.rev_selected_map())
         if not os.path.exists(path): return
-            
         with open(path, "r") as f: lines = f.readlines()
         
-        slides = []
-        path_stack = []
+        slides, path_stack = [], []
         for line in lines:
             if not line.strip(): continue
             raw = line.rstrip()
-            
             if raw.startswith('#'):
                 level = len(raw) - len(raw.lstrip('#'))
                 content = raw.lstrip('#').strip()
             else:
-                indent = len(raw) - len(raw.lstrip())
-                level = 10 + indent 
-                content = raw.strip()
-                for char in ['-', '*', '+']:
-                    if content.startswith(char):
-                        content = content.lstrip(char).strip()
-                        break
-                        
+                level = 10 + len(raw) - len(raw.lstrip()) 
+                content = raw.strip().lstrip('-*+').strip()
             while path_stack and path_stack[-1][0] >= level: path_stack.pop()
-                
-            breadcrumb = " ➔ ".join([p[1] for p in path_stack]) if path_stack else "Root Node"
-            slides.append({"breadcrumb": breadcrumb, "raw": raw})
+            slides.append({"breadcrumb": " ➔ ".join([p[1] for p in path_stack]) if path_stack else "Root Node", "raw": raw})
             path_stack.append((level, content))
-            
-        if not slides: return ui.notification_show("Map is empty!", type="warning")
             
         rev_slides.set(slides)
         rev_current_idx.set(0)
@@ -719,55 +605,34 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.next_slide)
     def _next_slide():
-        idx = rev_current_idx()
-        if idx < len(rev_slides()) - 1: rev_current_idx.set(idx + 1)
+        if rev_current_idx() < len(rev_slides()) - 1: rev_current_idx.set(rev_current_idx() + 1)
 
     @reactive.Effect
     @reactive.event(input.prev_slide)
     def _prev_slide():
-        idx = rev_current_idx()
-        if idx > 0: rev_current_idx.set(idx - 1)
+        if rev_current_idx() > 0: rev_current_idx.set(rev_current_idx() - 1)
 
     @reactive.Effect
     @reactive.event(input.finish_slide)
     def _finish_revision():
         duration = round((time.time() - rev_start_time()) / 60, 2)
         df = load_revisions()
-        new_row = pd.DataFrame({
-            "Module": [input.rev_mod_select()],
-            "Map": [input.rev_selected_map()],
-            "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")],
-            "Duration (min)": [duration]
-        })
+        new_row = pd.DataFrame({"Module": [input.rev_mod_select()], "Map": [input.rev_selected_map()], "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")], "Duration (min)": [duration], "Activity": ["Revision"]})
         pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
         rev_active.set(False)
         refresh_trigger.set(refresh_trigger() + 1)
-        ui.notification_show(f"Session Complete! Tracked {duration} minutes.", type="message")
+        ui.notification_show(f"Session Complete! Logged {duration} mins of Retrieval.", type="message")
 
     @output
     @render.ui
     async def revision_display_ui():
-        if not rev_active():
-            return ui.div(
-                ui.h4("Ready to Review?", class_="text-center mt-4 text-muted"),
-                ui.p("Select a module and map from the sidebar to begin navigating your notes step-by-step.", class_="text-center text-muted"),
-                style="min-height: 250px; display: flex; flex-direction: column; justify-content: center;"
-            )
-            
-        slides = rev_slides()
-        idx = rev_current_idx()
-        slide = slides[idx]
-        
+        if not rev_active(): return ui.div(ui.h4("Ready to Review?", class_="text-center mt-4 text-muted"), style="min-height: 250px; display: flex; flex-direction: column; justify-content: center;")
+        slides, idx = rev_slides(), rev_current_idx()
         await session.send_custom_message("render_katex", None)
-        
         return ui.div(
-            ui.p(slide["breadcrumb"], class_="text-muted", style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px;"),
+            ui.p(slides[idx]["breadcrumb"], class_="text-muted", style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px;"),
             ui.hr(style="margin-top: 5px;"),
-            ui.div(
-                ui.markdown(slide["raw"]), 
-                class_="slide-content",
-                style="font-size: 1.6em; padding: 20px 10px; min-height: 250px; display: flex; align-items: center; justify-content: center; text-align: center;"
-            ),
+            ui.div(ui.markdown(slides[idx]["raw"]), class_="slide-content", style="font-size: 1.6em; padding: 20px 10px; min-height: 250px; display: flex; align-items: center; justify-content: center; text-align: center;"),
             ui.hr(),
             ui.div(
                 ui.input_action_button("prev_slide", "⬅️ Prev", class_="btn-light"),
@@ -784,23 +649,15 @@ def server(input, output, session):
     def revision_history_table():
         refresh_trigger()
         df = load_revisions()
-        if df.empty: return pd.DataFrame(columns=["Module", "Map", "Date", "Duration (min)"])
-        return df.sort_index(ascending=False).head(10) 
+        return df.sort_index(ascending=False).head(10) if not df.empty else pd.DataFrame(columns=["Module", "Map", "Date", "Duration (min)", "Activity"])
 
     @output
     @render.ui
     def rev_quick_stats_ui():
         refresh_trigger()
         df = load_revisions()
-        if df.empty: return ui.markdown("_No stats yet. Complete a session!_")
-        
-        total_time = df['Duration (min)'].sum()
-        last_mod = df.iloc[-1]['Module'] if not df.empty else "N/A"
-        
-        return ui.div(
-            ui.p(ui.tags.b("Total Time Studied: "), f"{round(total_time, 1)} mins"),
-            ui.p(ui.tags.b("Last Revised: "), f"{last_mod}")
-        )
+        if df.empty: return ui.markdown("_No stats yet._")
+        return ui.div(ui.p(ui.tags.b("Total Time Studied: "), f"{round(df['Duration (min)'].sum(), 1)} mins"), ui.p(ui.tags.b("Last Revised: "), f"{df.iloc[-1]['Module']}"))
 
     # ==========================
     # BLURT STUDIO LOGIC 
@@ -810,49 +667,50 @@ def server(input, output, session):
     def blurt_map_loader_ui():
         refresh_trigger()
         maps = get_saved_maps(input.blurt_mod_select())
-        if not maps: return ui.markdown("_No saved maps_")
-        return ui.input_select("blurt_selected_map", "Select Map to Blurt", maps)
+        return ui.input_select("blurt_selected_map", "Select Map to Blurt", maps) if maps else ui.markdown("_No saved maps_")
 
     @reactive.Effect
     @reactive.event(input.start_blurt_btn)
     def _start_blurt():
-        mod = input.blurt_mod_select()
-        map_name = input.blurt_selected_map()
-        if not map_name:
-            ui.notification_show("No map selected.", type="error")
-            return
-
-        path = os.path.join(BASE_PATH, mod, map_name)
+        if not input.blurt_selected_map(): return ui.notification_show("No map selected.", type="error")
+        path = os.path.join(BASE_PATH, input.blurt_mod_select(), input.blurt_selected_map())
         if not os.path.exists(path): return
 
-        with open(path, "r") as f:
-            content = f.read()
-
+        with open(path, "r") as f: content = f.read()
         blurt_original.set(content)
 
-        # Generate template by extracting headers and handling images
-        lines = content.split('\n')
         template_lines = []
-        for line in lines:
+        for line in content.split('\n'):
             if line.strip().startswith('#'):
-                # Replace markdown images with a text prompt to recall what the image was
                 clean_line = re.sub(r'!\[.*?\]\(.*?\)', '[Image Reference]', line).strip()
-                
-                # Check if there is still content left (ignores headers that were somehow reduced to just '#')
                 if clean_line.replace('#', '').strip():
-                    template_lines.append(clean_line)
-                    template_lines.append("\n\n\n")
+                    template_lines.extend([clean_line, "\n\n\n"])
 
         blurt_template.set("".join(template_lines))
         blurt_state.set("blurting")
-        ui.notification_show("Template Generated! Start recalling.", type="message")
+        blurt_start_time.set(time.time()) # START TIMER
+        ui.notification_show("Timer Started! Start recalling.", type="message")
 
     @reactive.Effect
     @reactive.event(input.review_blurt_btn)
     def _review_blurt():
         if blurt_state() == "blurting":
             blurt_state.set("review")
-            ui.notification_show("Review Mode Activated", type="warning")
+            duration = round((time.time() - blurt_start_time()) / 60, 2)
+            
+            # LOG THE RETRIEVAL TIME
+            df = load_revisions()
+            new_row = pd.DataFrame({
+                "Module": [input.blurt_mod_select()],
+                "Map": [input.blurt_selected_map()],
+                "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")],
+                "Duration (min)": [duration],
+                "Activity": ["Blurt"]
+            })
+            pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
+            refresh_trigger.set(refresh_trigger() + 1)
+            
+            ui.notification_show(f"Review Mode! Logged {duration} mins of Retrieval.", type="warning")
         else:
             ui.notification_show("Generate a template first.", type="error")
 
@@ -868,43 +726,15 @@ def server(input, output, session):
     @render.ui
     async def blurt_main_area_ui():
         state = blurt_state()
-
         if state == "setup":
-            return ui.div(
-                ui.h4("Active Recall Sandbox", class_="text-center mt-4 text-muted"),
-                ui.p("Select a map and click 'Generate Template' to extract headers and start your blurt session.", class_="text-center text-muted"),
-                style="min-height: 400px; display: flex; flex-direction: column; justify-content: center;"
-            )
-            
+            return ui.div(ui.h4("Active Recall Sandbox", class_="text-center mt-4 text-muted"), style="min-height: 400px; display: flex; flex-direction: column; justify-content: center;")
         elif state == "blurting":
-            return ui.div(
-                ui.card_header("🧠 Active Recall: Type what you remember under each heading"),
-                ui.input_text_area(
-                    "blurt_input", 
-                    label=None, 
-                    value=blurt_template(), 
-                    width="100%", 
-                    height="600px"
-                )
-            )
-            
+            return ui.div(ui.card_header("🧠 Active Recall: Type what you remember under each heading"), ui.input_text_area("blurt_input", label=None, value=blurt_template(), width="100%", height="600px"))
         elif state == "review":
             await session.send_custom_message("render_katex", None)
             return ui.layout_columns(
-                ui.card(
-                    ui.card_header(ui.tags.b("✍️ Your Blurt")),
-                    ui.div(
-                        ui.markdown(input.blurt_input()),
-                        class_="blurt-review-panel"
-                    )
-                ),
-                ui.card(
-                    ui.card_header(ui.tags.b("📚 Original Source")),
-                    ui.div(
-                        ui.markdown(blurt_original()),
-                        class_="blurt-review-panel"
-                    )
-                ),
+                ui.card(ui.card_header(ui.tags.b("✍️ Your Blurt")), ui.div(ui.markdown(input.blurt_input()), class_="blurt-review-panel")),
+                ui.card(ui.card_header(ui.tags.b("📚 Original Source")), ui.div(ui.markdown(blurt_original()), class_="blurt-review-panel")),
                 col_widths=(6, 6)
             )
 
