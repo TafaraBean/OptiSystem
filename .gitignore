@@ -1,6 +1,6 @@
 # Exclude your virtual environment and personal local data
 /.venv/
-/OptiSystem_Data/
+#/OptiSystem_Data/
 
 # Exclude compiled Python files (these generate automatically and clutter your repo)
 __pycache__/

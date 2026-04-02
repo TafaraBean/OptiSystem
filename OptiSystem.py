@@ -19,8 +19,8 @@ custom_js = """
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
 
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css">
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
@@ -42,14 +42,25 @@ custom_js = """
     .katex-mathml { display: none !important; }
     #mindmap strong, #mindmap b { font-weight: 900 !important; font-style: normal !important; color: #000 !important; }
     #mindmap foreignObject div { white-space: nowrap !important; }
+    
+    /* FIX: Contain spillover for markdown and slides */
+    .slide-content { width: 100%; max-width: 100%; overflow-x: auto; box-sizing: border-box; word-wrap: break-word; overflow-wrap: break-word; }
+    .slide-content > * { max-width: 100%; }
     .slide-content img { margin: 0 auto; }
-    .slide-container { transition: all 0.3s ease-in-out; }
+    .slide-container { transition: all 0.3s ease-in-out; max-width: 100%; overflow: hidden; box-sizing: border-box; }
+    
     .kpi-card { text-align: center; padding: 20px 10px; border-radius: 8px; background: #f8f9fa; border: 1px solid #dee2e6; }
     .kpi-val { font-size: 2em; font-weight: bold; margin: 10px 0; }
     .kpi-val.retrieval { color: #198754; }
     .kpi-val.encoding { color: #0dcaf0; }
     .kpi-title { font-size: 1em; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; }
-    .blurt-review-panel { max-height: 600px; overflow-y: auto; padding: 15px; background: #fff; border-radius: 5px; border: 1px solid #eee; }
+    
+    /* FIX: Contain spillover for blurt review */
+    .blurt-review-panel { max-height: 600px; overflow-y: auto; overflow-x: auto; padding: 15px; background: #fff; border-radius: 5px; border: 1px solid #eee; word-wrap: break-word; overflow-wrap: break-word; }
+    .blurt-review-panel > * { max-width: 100%; }
+    
+    /* FIX: Make sure KaTeX displays wrap/stack or scroll gracefully if massive */
+    .katex-display { overflow-x: auto; overflow-y: hidden; max-width: 100%; padding-bottom: 5px; }
 </style>
 
 <script>
@@ -113,7 +124,10 @@ custom_js = """
     Shiny.addCustomMessageHandler('render_katex', function(msg) {
         setTimeout(function() {
             if (window.renderMathInElement) {
-                renderMathInElement(document.body, { delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}] });
+                renderMathInElement(document.body, { delimiters: [
+                    {left: '$$', right: '$$', display: true}, 
+                    {left: '$', right: '$', display: false}
+                ] });
             }
         }, 50); 
     });
@@ -186,6 +200,28 @@ def get_saved_maps(module):
     mod_path = os.path.join(BASE_PATH, module)
     if not os.path.exists(mod_path): return []
     return [f for f in os.listdir(mod_path) if f.endswith('.md')]
+
+def protect_math(raw_text):
+    """Protects LaTeX from being destroyed by the Markdown parser."""
+    if not raw_text: return ""
+    
+    # Escape characters INSIDE math blocks only to prevent markdown from eating them
+    def repl(m):
+        block = m.group(0)
+        # Protect double-backslashes (e.g., for LaTeX newlines like \begin{array})
+        block = block.replace("\\\\", "\\\\\\\\")
+        # Protect escaped braces so markdown doesn't strip the backslash (e.g., \left\{ )
+        block = block.replace("\\{", "\\\\{").replace("\\}", "\\\\}")
+        # Protect underscores and asterisks from turning into HTML <em> / <strong> tags
+        block = block.replace("_", "\\_").replace("*", "\\*")
+        return block
+    
+    # Process block math $$...$$
+    text = re.sub(r'\$\$.*?\$\$', repl, raw_text, flags=re.DOTALL)
+    # Process inline math $...$
+    text = re.sub(r'(?<!\$)\$.*?\$(?!\$)', repl, text, flags=re.DOTALL)
+    
+    return text
 
 # --- UI ---
 app_ui = ui.page_navbar(
@@ -295,24 +331,21 @@ app_ui = ui.page_navbar(
         )
     ),
     
-    title="OptiSystem v6.16",
+    title="OptiSystem v6.18",
 )
 
 # --- SERVER ---
 def server(input, output, session):
     refresh_trigger = reactive.Value(0)
     
-    # Study Lab Timers
     sl_active = reactive.Value(False)
     sl_start_time = reactive.Value(0.0)
 
-    # Revision Hub Timers
     rev_active = reactive.Value(False)
     rev_slides = reactive.Value([])
     rev_current_idx = reactive.Value(0)
     rev_start_time = reactive.Value(0.0)
     
-    # Blurt Studio Timers
     blurt_state = reactive.Value("setup") 
     blurt_original = reactive.Value("")
     blurt_template = reactive.Value("")
@@ -375,28 +408,20 @@ def server(input, output, session):
         df = get_processed_rev_df()
         if df.empty: return
         
-        # DAILY STATS
         daily = df.groupby(['Date_Only', 'Activity'])['Duration (min)'].sum().unstack(fill_value=0)
-        if 'Study Lab' not in daily: daily['Study Lab'] = 0
-        if 'Revision' not in daily: daily['Revision'] = 0
-        if 'Blurt' not in daily: daily['Blurt'] = 0
-        
+        for col in ['Study Lab', 'Revision', 'Blurt']:
+            if col not in daily: daily[col] = 0
         daily_retrieval = daily['Revision'] + daily['Blurt']
         
-        # WEEKLY STATS
         weekly = df.groupby(['YearWeek', 'Activity'])['Duration (min)'].sum().unstack(fill_value=0)
-        if 'Study Lab' not in weekly: weekly['Study Lab'] = 0
-        if 'Revision' not in weekly: weekly['Revision'] = 0
-        if 'Blurt' not in weekly: weekly['Blurt'] = 0
-            
+        for col in ['Study Lab', 'Revision', 'Blurt']:
+            if col not in weekly: weekly[col] = 0
         weekly_retrieval = weekly['Revision'] + weekly['Blurt']
         
-        # .tolist() forces native Python types so JSON serialization doesn't crash
         payload = {
             "d_labels": [d.strftime("%b %d") for d in daily.index],
             "d_encoding": daily['Study Lab'].tolist(),
             "d_retrieval": daily_retrieval.tolist(),
-            
             "w_labels": list(weekly.index),
             "w_encoding": weekly['Study Lab'].tolist(),
             "w_retrieval": weekly_retrieval.tolist()
@@ -504,32 +529,24 @@ def server(input, output, session):
     def _start_sl():
         sl_start_time.set(time.time())
         sl_active.set(True)
-        ui.notification_show("Note-taking session started. Focus up!", type="message")
+        ui.notification_show("Note-taking session started.", type="message")
 
     @reactive.Effect
     @reactive.event(input.end_sl_btn)
     def _end_sl():
-        if not sl_active():
-            ui.notification_show("No active session running.", type="warning")
-            return
+        if not sl_active(): return
         duration = round((time.time() - sl_start_time()) / 60, 2)
         df = load_revisions()
-        new_row = pd.DataFrame({
-            "Module": [input.map_mod()],
-            "Map": [input.save_name() if input.save_name() else "Drafting"],
-            "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")],
-            "Duration (min)": [duration],
-            "Activity": ["Study Lab"]
-        })
+        new_row = pd.DataFrame({"Module": [input.map_mod()], "Map": [input.save_name() if input.save_name() else "Drafting"], "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")], "Duration (min)": [duration], "Activity": ["Study Lab"]})
         pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
         sl_active.set(False)
         refresh_trigger.set(refresh_trigger() + 1)
-        ui.notification_show(f"Logged {duration} minutes of Encoding time.", type="message")
+        ui.notification_show(f"Logged {duration} minutes.", type="message")
 
     @reactive.Effect
     @reactive.event(input.save_btn)
     def _save_map():
-        if not input.save_name(): return ui.notification_show("Name your file first!", type="error")
+        if not input.save_name(): return
         filename = input.save_name().strip().replace(" ", "_") + (".md" if not input.save_name().endswith(".md") else "")
         with open(os.path.join(BASE_PATH, input.map_mod(), filename), "w") as f: f.write(input.map_content())
         refresh_trigger.set(refresh_trigger() + 1)
@@ -559,11 +576,10 @@ def server(input, output, session):
         header, encoded = data_url.split(",", 1)
         filename = f"img_{int(time.time())}.png"
         mod_dir = os.path.join(BASE_PATH, input.map_mod())
-        if not os.path.exists(mod_dir): os.makedirs(mod_dir)
+        os.makedirs(mod_dir, exist_ok=True)
         with open(os.path.join(mod_dir, filename), "wb") as f: f.write(base64.b64decode(encoded))
         full_content = input.map_content() + f"\n- ![{filename}](/files/{input.map_mod()}/{filename})"
         await session.send_custom_message("update_editor", full_content) 
-        ui.notification_show(f"Image saved to {input.map_mod()}")
 
     # ==========================
     # REVISION HUB LOGIC 
@@ -581,21 +597,68 @@ def server(input, output, session):
         if not input.rev_selected_map(): return
         path = os.path.join(BASE_PATH, input.rev_mod_select(), input.rev_selected_map())
         if not os.path.exists(path): return
+        
         with open(path, "r") as f: lines = f.readlines()
         
-        slides, path_stack = [], []
+        slides = []
+        path_stack = []
+        current_raw = []
+        
+        in_math = False
+        in_code = False
+        
+        def save_node():
+            if current_raw:
+                raw_text = "\n".join(current_raw).strip()
+                if raw_text:
+                    breadcrumb = " ➔ ".join([p[1] for p in path_stack]) if path_stack else "Root Node"
+                    slides.append({"breadcrumb": breadcrumb, "raw": raw_text})
+                current_raw.clear()
+
         for line in lines:
-            if not line.strip(): continue
-            raw = line.rstrip()
-            if raw.startswith('#'):
-                level = len(raw) - len(raw.lstrip('#'))
-                content = raw.lstrip('#').strip()
-            else:
-                level = 10 + len(raw) - len(raw.lstrip()) 
-                content = raw.strip().lstrip('-*+').strip()
-            while path_stack and path_stack[-1][0] >= level: path_stack.pop()
-            slides.append({"breadcrumb": " ➔ ".join([p[1] for p in path_stack]) if path_stack else "Root Node", "raw": raw})
-            path_stack.append((level, content))
+            stripped = line.strip()
+            
+            # State Tracker for Math and Code Blocks
+            if stripped.startswith("`" * 3): in_code = not in_code
+            
+            # FIX: Safely toggle math state by counting occurrences of '$$' 
+            # (Works even if '$$' is inline with text)
+            if stripped.count("$$") % 2 != 0:
+                in_math = not in_math
+                
+            is_new_node = False
+            level = 0
+            content = ""
+            
+            # Only detect new nodes if we are outside of a code/math block
+            if not in_math and not in_code:
+                if re.match(r'^#{1,6}\s', line):
+                    is_new_node = True
+                    level = len(line) - len(line.lstrip('#'))
+                    content = line.lstrip('#').strip()
+                elif re.match(r'^\s*[-*+]\s', line):
+                    is_new_node = True
+                    level = 10 + len(line) - len(line.lstrip())
+                    content = line.strip().lstrip('-*+').strip()
+                elif re.match(r'^\s*\d+\.\s', line):
+                    is_new_node = True
+                    level = 10 + len(line) - len(line.lstrip())
+                    content = re.sub(r'^\s*\d+\.\s*', '', line).strip()
+
+            if is_new_node:
+                save_node() # Wrap up the previous slide
+                
+                # Manage hierarchy
+                while path_stack and path_stack[-1][0] >= level: 
+                    path_stack.pop()
+                path_stack.append((level, content))
+                
+            current_raw.append(line.rstrip("\n"))
+            
+        save_node() # Catch the last slide
+        
+        if not slides:
+            slides = [{"breadcrumb": "Empty", "raw": "No content found."}]
             
         rev_slides.set(slides)
         rev_current_idx.set(0)
@@ -621,7 +684,7 @@ def server(input, output, session):
         pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
         rev_active.set(False)
         refresh_trigger.set(refresh_trigger() + 1)
-        ui.notification_show(f"Session Complete! Logged {duration} mins of Retrieval.", type="message")
+        ui.notification_show(f"Session Complete! Logged {duration} mins.", type="message")
 
     @output
     @render.ui
@@ -629,10 +692,17 @@ def server(input, output, session):
         if not rev_active(): return ui.div(ui.h4("Ready to Review?", class_="text-center mt-4 text-muted"), style="min-height: 250px; display: flex; flex-direction: column; justify-content: center;")
         slides, idx = rev_slides(), rev_current_idx()
         await session.send_custom_message("render_katex", None)
+        
+        display_raw = protect_math(slides[idx]["raw"])
+        
         return ui.div(
             ui.p(slides[idx]["breadcrumb"], class_="text-muted", style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px;"),
             ui.hr(style="margin-top: 5px;"),
-            ui.div(ui.markdown(slides[idx]["raw"]), class_="slide-content", style="font-size: 1.6em; padding: 20px 10px; min-height: 250px; display: flex; align-items: center; justify-content: center; text-align: center;"),
+            ui.div(
+                ui.markdown(display_raw), 
+                class_="slide-content", 
+                style="font-size: 1.6em; padding: 20px 10px; min-height: 250px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;"
+            ),
             ui.hr(),
             ui.div(
                 ui.input_action_button("prev_slide", "⬅️ Prev", class_="btn-light"),
@@ -657,7 +727,7 @@ def server(input, output, session):
         refresh_trigger()
         df = load_revisions()
         if df.empty: return ui.markdown("_No stats yet._")
-        return ui.div(ui.p(ui.tags.b("Total Time Studied: "), f"{round(df['Duration (min)'].sum(), 1)} mins"), ui.p(ui.tags.b("Last Revised: "), f"{df.iloc[-1]['Module']}"))
+        return ui.div(ui.p(ui.tags.b("Total Time Studied: "), f"{round(df['Duration (min)'].sum(), 1)} mins"))
 
     # ==========================
     # BLURT STUDIO LOGIC 
@@ -672,24 +742,14 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.start_blurt_btn)
     def _start_blurt():
-        if not input.blurt_selected_map(): return ui.notification_show("No map selected.", type="error")
+        if not input.blurt_selected_map(): return
         path = os.path.join(BASE_PATH, input.blurt_mod_select(), input.blurt_selected_map())
-        if not os.path.exists(path): return
-
         with open(path, "r") as f: content = f.read()
         blurt_original.set(content)
-
-        template_lines = []
-        for line in content.split('\n'):
-            if line.strip().startswith('#'):
-                clean_line = re.sub(r'!\[.*?\]\(.*?\)', '[Image Reference]', line).strip()
-                if clean_line.replace('#', '').strip():
-                    template_lines.extend([clean_line, "\n\n\n"])
-
-        blurt_template.set("".join(template_lines))
+        template = "".join([f"{line}\n\n\n" for line in content.split('\n') if line.strip().startswith('#')])
+        blurt_template.set(template)
         blurt_state.set("blurting")
-        blurt_start_time.set(time.time()) # START TIMER
-        ui.notification_show("Timer Started! Start recalling.", type="message")
+        blurt_start_time.set(time.time())
 
     @reactive.Effect
     @reactive.event(input.review_blurt_btn)
@@ -697,44 +757,31 @@ def server(input, output, session):
         if blurt_state() == "blurting":
             blurt_state.set("review")
             duration = round((time.time() - blurt_start_time()) / 60, 2)
-            
-            # LOG THE RETRIEVAL TIME
             df = load_revisions()
-            new_row = pd.DataFrame({
-                "Module": [input.blurt_mod_select()],
-                "Map": [input.blurt_selected_map()],
-                "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")],
-                "Duration (min)": [duration],
-                "Activity": ["Blurt"]
-            })
+            new_row = pd.DataFrame({"Module": [input.blurt_mod_select()], "Map": [input.blurt_selected_map()], "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")], "Duration (min)": [duration], "Activity": ["Blurt"]})
             pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
             refresh_trigger.set(refresh_trigger() + 1)
-            
-            ui.notification_show(f"Review Mode! Logged {duration} mins of Retrieval.", type="warning")
-        else:
-            ui.notification_show("Generate a template first.", type="error")
 
     @reactive.Effect
     @reactive.event(input.reset_blurt_btn)
     def _reset_blurt():
         blurt_state.set("setup")
-        blurt_original.set("")
-        blurt_template.set("")
-        ui.notification_show("Session Reset", type="message")
 
     @output
     @render.ui
     async def blurt_main_area_ui():
         state = blurt_state()
-        if state == "setup":
-            return ui.div(ui.h4("Active Recall Sandbox", class_="text-center mt-4 text-muted"), style="min-height: 400px; display: flex; flex-direction: column; justify-content: center;")
-        elif state == "blurting":
-            return ui.div(ui.card_header("🧠 Active Recall: Type what you remember under each heading"), ui.input_text_area("blurt_input", label=None, value=blurt_template(), width="100%", height="600px"))
+        if state == "setup": return ui.div(ui.h4("Active Recall Sandbox", class_="text-center mt-4 text-muted"), style="min-height: 400px;")
+        elif state == "blurting": return ui.div(ui.input_text_area("blurt_input", label="Recall everything:", value=blurt_template(), width="100%", height="600px"))
         elif state == "review":
             await session.send_custom_message("render_katex", None)
+            
+            blurt_in_val = protect_math(input.blurt_input())
+            blurt_orig_val = protect_math(blurt_original())
+            
             return ui.layout_columns(
-                ui.card(ui.card_header(ui.tags.b("✍️ Your Blurt")), ui.div(ui.markdown(input.blurt_input()), class_="blurt-review-panel")),
-                ui.card(ui.card_header(ui.tags.b("📚 Original Source")), ui.div(ui.markdown(blurt_original()), class_="blurt-review-panel")),
+                ui.card(ui.card_header("✍️ Your Blurt"), ui.div(ui.markdown(blurt_in_val), class_="blurt-review-panel")),
+                ui.card(ui.card_header("📚 Original"), ui.div(ui.markdown(blurt_orig_val), class_="blurt-review-panel")),
                 col_widths=(6, 6)
             )
 
