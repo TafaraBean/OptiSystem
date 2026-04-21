@@ -624,16 +624,18 @@ def server(input, output, session):
         if pdf_info:
             try:
                 pdf_path = pdf_info[0]["datapath"]
-                temp_dir = os.path.join(BASE_PATH, ".temp_session")
-                os.makedirs(temp_dir, exist_ok=True)
-                dest_path = os.path.join(temp_dir, "active_reading.pdf")
-                shutil.copy(pdf_path, dest_path)
+                
+                # Convert the PDF directly to a Base64 data URL in memory
+                with open(pdf_path, "rb") as f:
+                    encoded_pdf = base64.b64encode(f.read()).decode("utf-8")
+                
+                pdf_data_url = f"data:application/pdf;base64,{encoded_pdf}"
                 
                 read_state.set({
                     "mode": "pdf", 
-                    "data": "/files/.temp_session/active_reading.pdf"
+                    "data": pdf_data_url
                 })
-                ui.notification_show("PDF loaded into temporary session.", type="message")
+                ui.notification_show("PDF loaded directly into viewer (no local file saved).", type="message")
             except Exception as e:
                 ui.notification_show(f"Failed to load PDF: {str(e)}", type="error")
                 
