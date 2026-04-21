@@ -44,7 +44,6 @@ custom_js = """
     #mindmap strong, #mindmap b { font-weight: 900 !important; font-style: normal !important; color: #000 !important; }
     #mindmap foreignObject div { white-space: nowrap !important; }
     
-    /* FIX: Contain spillover for markdown and slides */
     .slide-content { width: 100%; max-width: 100%; overflow-x: auto; box-sizing: border-box; word-wrap: break-word; overflow-wrap: break-word; }
     .slide-content > * { max-width: 100%; }
     .slide-content img { margin: 0 auto; }
@@ -56,16 +55,13 @@ custom_js = """
     .kpi-val.encoding { color: #0dcaf0; }
     .kpi-title { font-size: 1em; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; }
     
-    /* FIX: Contain spillover for blurt review */
     .blurt-review-panel { max-height: 600px; overflow-y: auto; overflow-x: auto; padding: 15px; background: #fff; border-radius: 5px; border: 1px solid #eee; word-wrap: break-word; overflow-wrap: break-word; }
     .blurt-review-panel > * { max-width: 100%; }
     
-    /* Reading Room Styles */
-    .reading-source-pane { padding: 15px; border-right: 2px solid #e9ecef; overflow-x: auto; font-size: 1.1em; background-color: #f8f9fa; border-radius: 5px 0 0 5px; }
+    .reading-source-pane { padding: 15px; border-right: 2px solid #e9ecef; font-size: 1.1em; background-color: #f8f9fa; border-radius: 5px 0 0 5px; }
     .reading-notes-pane { padding: 15px; background-color: #fff; border-radius: 0 5px 5px 0; }
     .aligned-row { border: 1px solid #dee2e6; border-radius: 5px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     
-    /* FIX: Make sure KaTeX displays wrap/stack or scroll gracefully if massive */
     .katex-display { overflow-x: auto; overflow-y: hidden; max-width: 100%; padding-bottom: 5px; }
 </style>
 
@@ -78,6 +74,41 @@ custom_js = """
         const mapOptions = { spacingHorizontal: 140, spacingVertical: 15 };
         const mm = markmap.Markmap.create('#mindmap', mapOptions, root);
         mm.fit(); 
+    }
+    
+    function attachSyncScroll() {
+        const leftPane = document.querySelector('.sync-scroll-left');
+        const rightPane = document.querySelector('.sync-scroll-right textarea');
+
+        if (!leftPane || !rightPane) return;
+        if (leftPane.dataset.syncAttached) return; 
+        
+        leftPane.dataset.syncAttached = 'true';
+
+        let isSyncingLeft = false;
+        let isSyncingRight = false;
+
+        leftPane.addEventListener('scroll', function(e) {
+            if (!isSyncingLeft) {
+                isSyncingRight = true;
+                let percentage = this.scrollTop / (this.scrollHeight - this.clientHeight);
+                if (!isNaN(percentage)) {
+                    rightPane.scrollTop = percentage * (rightPane.scrollHeight - rightPane.clientHeight);
+                }
+            }
+            isSyncingLeft = false;
+        });
+
+        rightPane.addEventListener('scroll', function(e) {
+            if (!isSyncingRight) {
+                isSyncingLeft = true;
+                let percentage = this.scrollTop / (this.scrollHeight - this.clientHeight);
+                if (!isNaN(percentage)) {
+                    leftPane.scrollTop = percentage * (leftPane.scrollHeight - leftPane.clientHeight);
+                }
+            }
+            isSyncingRight = false;
+        });
     }
 
     document.addEventListener('DOMContentLoaded', function() {
@@ -120,12 +151,16 @@ custom_js = """
                 updateMindMap(easymde.value());
             }
         }, 1000); 
+        
+        const observer = new MutationObserver((mutations) => {
+            attachSyncScroll();
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
     });
 
-    // Global listener for pasting images into dynamically generated Reading Room textareas
     document.addEventListener('paste', function(e) {
         const target = e.target;
-        if (target.tagName === 'TEXTAREA' && target.id.startsWith('read_note_')) {
+        if (target.tagName === 'TEXTAREA' && target.id === 'read_note_main') {
             const items = (e.clipboardData || e.originalEvent.clipboardData).items;
             for (let index in items) {
                 const item = items[index];
@@ -149,7 +184,6 @@ custom_js = """
         updateMindMap(markdown);
     });
 
-    // Inserts text exactly at the cursor's location in a given text area
     Shiny.addCustomMessageHandler('insert_at_cursor', function(payload) {
         const el = document.getElementById(payload.target);
         if (el) {
@@ -237,6 +271,7 @@ def load_revisions():
 def get_module_names():
     if not os.path.exists(BASE_PATH): return ["General"]
     mods = [d for d in os.listdir(BASE_PATH) if os.path.isdir(os.path.join(BASE_PATH, d))]
+    mods = [m for m in mods if m != ".temp_session"]
     return mods if mods else ["General"]
 
 def get_saved_maps(module):
@@ -245,19 +280,15 @@ def get_saved_maps(module):
     return [f for f in os.listdir(mod_path) if f.endswith('.md')]
 
 def protect_math(raw_text):
-    """Protects LaTeX from being destroyed by the Markdown parser."""
     if not raw_text: return ""
-    
     def repl(m):
         block = m.group(0)
         block = block.replace("\\\\", "\\\\\\\\")
         block = block.replace("\\{", "\\\\{").replace("\\}", "\\\\}")
         block = block.replace("_", "\\_").replace("*", "\\*")
         return block
-    
     text = re.sub(r'\$\$.*?\$\$', repl, raw_text, flags=re.DOTALL)
     text = re.sub(r'(?<!\$)\$.*?\$(?!\$)', repl, text, flags=re.DOTALL)
-    
     return text
 
 # --- UI ---
@@ -312,7 +343,6 @@ app_ui = ui.page_navbar(
         ui.card(ui.output_ui("progress_bars_list"))
     ),
 
-    # ---> NEW READING ROOM TAB <---
     ui.nav_panel("Reading Room",
         ui.layout_sidebar(
             ui.sidebar(
@@ -390,16 +420,14 @@ app_ui = ui.page_navbar(
         )
     ),
     
-    title="OptiSystem v6.24",
+    title="OptiSystem v6.29",
 )
 
 # --- SERVER ---
 def server(input, output, session):
     refresh_trigger = reactive.Value(0)
     
-    # Reading Room State: { "mode": "pdf" | "text" | None, "data": url_or_blocks }
     read_state = reactive.Value({"mode": None, "data": None})
-    
     sl_active = reactive.Value(False)
     sl_start_time = reactive.Value(0.0)
 
@@ -556,7 +584,8 @@ def server(input, output, session):
             os.makedirs(os.path.join(BASE_PATH, name), exist_ok=True)
             refresh_trigger.set(refresh_trigger() + 1)
             mods = get_module_names()
-            for select_id in ["mod_select", "read_mod", "map_mod", "rev_mod_select", "blurt_mod_select"]: ui.update_select(select_id, choices=mods)
+            for select_id in ["mod_select", "read_mod", "map_mod", "rev_mod_select", "blurt_mod_select"]: 
+                ui.update_select(select_id, choices=mods)
 
     @output
     @render.ui
@@ -592,31 +621,25 @@ def server(input, output, session):
         pdf_info = input.upload_pdf()
         text_source = input.read_source()
 
-        # Handle PDF Upload Mode
         if pdf_info:
             try:
                 pdf_path = pdf_info[0]["datapath"]
-                filename = f"textbook_{int(time.time())}.pdf"
-                mod_dir = os.path.join(BASE_PATH, input.read_mod())
-                os.makedirs(mod_dir, exist_ok=True)
-                dest_path = os.path.join(mod_dir, filename)
-                
+                temp_dir = os.path.join(BASE_PATH, ".temp_session")
+                os.makedirs(temp_dir, exist_ok=True)
+                dest_path = os.path.join(temp_dir, "active_reading.pdf")
                 shutil.copy(pdf_path, dest_path)
                 
-                # Save state as PDF and point to the static file URL
                 read_state.set({
                     "mode": "pdf", 
-                    "data": f"/files/{input.read_mod()}/{filename}"
+                    "data": "/files/.temp_session/active_reading.pdf"
                 })
-                ui.notification_show("PDF loaded perfectly. Start annotating!", type="message")
+                ui.notification_show("PDF loaded into temporary session.", type="message")
             except Exception as e:
                 ui.notification_show(f"Failed to load PDF: {str(e)}", type="error")
                 
-        # Handle Raw Text / LaTeX Mode
         elif text_source and text_source.strip():
-            blocks = [b.strip() for b in re.split(r'\n\s*\n', text_source) if b.strip()]
-            read_state.set({"mode": "text", "data": blocks})
-            ui.notification_show(f"Processed {len(blocks)} chunks for annotation.", type="message")
+            read_state.set({"mode": "text", "data": text_source})
+            ui.notification_show("Loaded text for aligned reading.", type="message")
             
         else:
             ui.notification_show("Please upload a PDF or paste text/LaTeX first.", type="warning")
@@ -630,7 +653,6 @@ def server(input, output, session):
         
         await session.send_custom_message("render_katex", None)
         
-        # UI for PDF Mode
         if state["mode"] == "pdf":
             return ui.div(
                 ui.layout_columns(
@@ -640,44 +662,42 @@ def server(input, output, session):
                     ),
                     ui.div(
                         ui.input_text_area(
-                            "read_note_pdf", 
+                            "read_note_main", 
                             label=None, 
-                            placeholder="Draft your notes here while reading the PDF on the left...\n\nUse Markdown (#, -, **, etc.) to organize them before sending to the Study Lab.\n\nTip: You can paste images directly here!", 
+                            placeholder="Draft your notes here while reading the PDF on the left...\n\nUse empty lines (Enter) to push your notes down so they physically align with the pages of the PDF on the left!\n\nTip: You can paste images directly here!", 
                             width="100%", 
                             height="800px"
                         ),
-                        class_="reading-notes-pane"
+                        class_="reading-notes-pane sync-scroll-right"
                     ),
                     col_widths=(6, 6)
                 ),
                 class_="aligned-row"
             )
             
-        # UI for Text Mode
         else:
-            blocks = state["data"]
-            elements = []
-            for i, block in enumerate(blocks):
-                safe_block = protect_math(block)
-                row = ui.div(
-                    ui.layout_columns(
-                        ui.div(ui.markdown(safe_block), class_="reading-source-pane"),
-                        ui.div(
-                            ui.input_text_area(
-                                f"read_note_{i}", 
-                                label=None, 
-                                placeholder="Draft notes or markdown here to align with the text on the left...\n(You can paste images here too!)", 
-                                width="100%", 
-                                height="150px"
-                            ),
-                            class_="reading-notes-pane"
-                        ),
-                        col_widths=(6, 6)
+            safe_source = protect_math(state["data"])
+            return ui.div(
+                ui.layout_columns(
+                    ui.div(
+                        ui.markdown(safe_source), 
+                        class_="reading-source-pane sync-scroll-left", 
+                        style="height: 800px; overflow-y: auto;"
                     ),
-                    class_="aligned-row"
-                )
-                elements.append(row)
-            return ui.div(*elements)
+                    ui.div(
+                        ui.input_text_area(
+                            "read_note_main", 
+                            label=None, 
+                            placeholder="Draft your notes here...\n\nUse empty lines (Enter) to push your notes down so they physically map and align with the text on the left!\n\nTip: You can paste images directly here!", 
+                            width="100%", 
+                            height="800px"
+                        ),
+                        class_="reading-notes-pane sync-scroll-right"
+                    ),
+                    col_widths=(6, 6)
+                ),
+                class_="aligned-row"
+            )
 
     @reactive.Effect
     @reactive.event(input.pasted_read_image_trigger)
@@ -695,10 +715,7 @@ def server(input, output, session):
         with open(os.path.join(mod_dir, filename), "wb") as f: 
             f.write(base64.b64decode(encoded))
             
-        # Generates the Markdown image tag
         img_md = f"\n![{filename}](/files/{input.read_mod()}/{filename})\n"
-        
-        # Uses JavaScript to safely insert the Markdown link right where the cursor was in the specific active textarea
         await session.send_custom_message("insert_at_cursor", {"target": target_id, "text": img_md})
 
     @reactive.Effect
@@ -714,30 +731,16 @@ def server(input, output, session):
             
         final_content = []
         
-        # Save PDF Notes
-        if state["mode"] == "pdf":
-            try:
-                note_val = input.read_note_pdf()
-                if note_val and note_val.strip():
-                    final_content.append(note_val)
-            except Exception:
-                pass
-                
-        # Save Text Chunk Notes
-        else:
-            blocks = state["data"]
-            for i, block in enumerate(blocks):
-                try:
-                    note_val = input[f"read_note_{i}"]()
-                except Exception:
-                    note_val = ""
-                    
-                if note_val and note_val.strip():
-                    if input.include_source():
-                        quoted_source = "\n".join([f"> {line}" for line in block.split("\n")])
-                        final_content.append(f"{quoted_source}\n\n{note_val}\n")
-                    else:
-                        final_content.append(f"{note_val}\n")
+        try:
+            note_val = input.read_note_main()
+            if note_val and note_val.strip():
+                if state["mode"] == "text" and input.include_source():
+                    quoted_source = "\n".join([f"> {line}" for line in state["data"].split("\n")])
+                    final_content.append(f"{quoted_source}\n\n---\n\n{note_val}\n")
+                else:
+                    final_content.append(f"{note_val}\n")
+        except Exception:
+            pass
                     
         if not final_content:
             ui.notification_show("No notes written. Nothing to save!", type="warning")
@@ -748,7 +751,7 @@ def server(input, output, session):
             filename += ".md"
             
         with open(os.path.join(BASE_PATH, input.read_mod(), filename), "w") as f:
-            f.write("\n\n---\n\n".join(final_content))
+            f.write("".join(final_content))
             
         refresh_trigger.set(refresh_trigger() + 1)
         ui.notification_show(f"Successfully exported {filename} to {input.read_mod()}! Go to Study Lab to view it.", type="message")
@@ -850,19 +853,13 @@ def server(input, output, session):
         for line in lines:
             stripped = line.strip()
             
-            # State Tracker for Math and Code Blocks
             if stripped.startswith("`" * 3): in_code = not in_code
-            
-            # FIX: Safely toggle math state by counting occurrences of '$$' 
-            # (Works even if '$$' is inline with text)
-            if stripped.count("$$") % 2 != 0:
-                in_math = not in_math
+            if stripped.count("$$") % 2 != 0: in_math = not in_math
                 
             is_new_node = False
             level = 0
             content = ""
             
-            # Only detect new nodes if we are outside of a code/math block
             if not in_math and not in_code:
                 if re.match(r'^#{1,6}\s', line):
                     is_new_node = True
@@ -878,16 +875,14 @@ def server(input, output, session):
                     content = re.sub(r'^\s*\d+\.\s*', '', line).strip()
 
             if is_new_node:
-                save_node() # Wrap up the previous slide
-                
-                # Manage hierarchy
+                save_node() 
                 while path_stack and path_stack[-1][0] >= level: 
                     path_stack.pop()
                 path_stack.append((level, content))
                 
             current_raw.append(line.rstrip("\n"))
             
-        save_node() # Catch the last slide
+        save_node() 
         
         if not slides:
             slides = [{"breadcrumb": "Empty", "raw": "No content found."}]
@@ -960,7 +955,7 @@ def server(input, output, session):
         df = load_revisions()
         if df.empty: return ui.markdown("_No stats yet._")
         return ui.div(ui.p(ui.tags.b("Total Time Studied: "), f"{round(df['Duration (min)'].sum(), 1)} mins"))
-
+    
     # ==========================
     # BLURT STUDIO LOGIC 
     # ==========================
