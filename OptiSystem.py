@@ -3,7 +3,6 @@ import pandas as pd
 import base64
 import time
 import re
-import shutil
 from datetime import datetime
 from shiny import App, render, ui, reactive
 
@@ -150,6 +149,92 @@ custom_js = """
 
                 updateMindMap(easymde.value());
             }
+            
+            // --- APPLE PENCIL SCRATCHPAD LOGIC ---
+            const canvas = document.getElementById('scratchpad-canvas');
+            if (canvas) {
+                const ctx = canvas.getContext('2d');
+                // Fill background with white so it saves properly as a PNG
+                ctx.fillStyle = "white";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                let drawing = false;
+                
+                function getPos(e) {
+                    const rect = canvas.getBoundingClientRect();
+                    const scaleX = canvas.width / rect.width;
+                    const scaleY = canvas.height / rect.height;
+                    let clientX = e.clientX;
+                    let clientY = e.clientY;
+                    
+                    if(e.touches && e.touches.length > 0) {
+                        clientX = e.touches[0].clientX;
+                        clientY = e.touches[0].clientY;
+                    }
+                    
+                    return {
+                        x: (clientX - rect.left) * scaleX,
+                        y: (clientY - rect.top) * scaleY
+                    };
+                }
+
+                function startDraw(e) {
+                    // Prevent page scrolling while drawing
+                    if(e.type !== 'mousedown') e.preventDefault(); 
+                    drawing = true;
+                    const pos = getPos(e);
+                    ctx.beginPath();
+                    ctx.moveTo(pos.x, pos.y);
+                    
+                    // Apple Pencil Pressure sensitivity
+                    let pressure = e.pressure !== undefined ? e.pressure : 0.5;
+                    ctx.lineWidth = (pressure * 6) + 1; 
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.strokeStyle = '#2c3e50';
+                }
+
+                function draw(e) {
+                    if (!drawing) return;
+                    if(e.type !== 'mousemove') e.preventDefault();
+                    const pos = getPos(e);
+                    
+                    if (e.pressure !== undefined && e.pointerType === 'pen') {
+                        ctx.lineWidth = (e.pressure * 8) + 1; 
+                    }
+                    
+                    ctx.lineTo(pos.x, pos.y);
+                    ctx.stroke();
+                }
+
+                function endDraw(e) {
+                    if(!drawing) return;
+                    drawing = false;
+                }
+
+                // Native Pointer Events (Perfect for iPad/Apple Pencil)
+                canvas.addEventListener('pointerdown', startDraw);
+                canvas.addEventListener('pointermove', draw);
+                canvas.addEventListener('pointerup', endDraw);
+                canvas.addEventListener('pointercancel', endDraw);
+                
+                // Fallbacks
+                canvas.addEventListener('touchstart', startDraw, {passive: false});
+                canvas.addEventListener('touchmove', draw, {passive: false});
+                canvas.addEventListener('touchend', endDraw);
+                
+                window.saveScratchpad = function() {
+                    const dataURL = canvas.toDataURL('image/png');
+                    Shiny.setInputValue('scratchpad_img_data', dataURL);
+                    Shiny.setInputValue('scratchpad_save_trigger', Math.random());
+                };
+                
+                window.clearScratchpad = function() {
+                    ctx.fillStyle = "white";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                };
+            }
+            
         }, 1000); 
         
         const observer = new MutationObserver((mutations) => {
@@ -389,6 +474,28 @@ app_ui = ui.page_navbar(
         )
     ),
 
+    # ---> NEW SCRATCHPAD TAB <---
+    ui.nav_panel("Scratchpad",
+        ui.layout_sidebar(
+            ui.sidebar(
+                ui.markdown("### **Apple Pencil Canvas**"),
+                ui.input_select("scratch_mod", "Select Module", get_module_names()),
+                ui.input_text("scratch_name", "Image Name", placeholder="e.g., cell_diagram"),
+                ui.input_action_button("save_scratch_btn", "Save & Sync PNG 💾", class_="btn-success w-100 mb-2", onclick="saveScratchpad()"),
+                ui.input_action_button("clear_scratch_btn", "Clear Canvas 🗑️", class_="btn-danger w-100", onclick="clearScratchpad()"),
+                ui.hr(),
+                ui.markdown("*Draw freehand graphs, equations, or diagrams. Saving exports it straight to your module folder!*")
+            ),
+            ui.card(
+                ui.card_header("Digital Whiteboard"),
+                ui.div(
+                    ui.HTML('<canvas id="scratchpad-canvas" width="800" height="600" style="border: 1px solid #dee2e6; border-radius: 8px; cursor: crosshair; touch-action: none; background-color: white; max-width: 100%;"></canvas>'),
+                    style="display: flex; justify-content: center; align-items: center; background-color: #f8f9fa; padding: 20px; border-radius: 8px;"
+                )
+            )
+        )
+    ),
+
     ui.nav_panel("Revision Hub",
         ui.layout_sidebar(
             ui.sidebar(
@@ -471,7 +578,7 @@ def server(input, output, session):
         val = 0.0
         if not df.empty:
             today = datetime.now().date()
-            val = df[(df['Date_Only'] == today) & (df['Activity'].isin(["Revision", "Blurt"]))]['Duration (min)'].sum()
+            val = df[(df['Date_Only'] == today) & (df['Activity'].isin(["Revision", "Blurt"]))] ['Duration (min)'].sum()
         return ui.HTML(f"<div class='kpi-title'>Retrieval Today (Recall)</div><div class='kpi-val retrieval'>{val:.1f} <span style='font-size:0.5em'>min</span></div>")
 
     @output
@@ -584,7 +691,7 @@ def server(input, output, session):
             os.makedirs(os.path.join(BASE_PATH, name), exist_ok=True)
             refresh_trigger.set(refresh_trigger() + 1)
             mods = get_module_names()
-            for select_id in ["mod_select", "read_mod", "map_mod", "rev_mod_select", "blurt_mod_select"]: 
+            for select_id in ["mod_select", "read_mod", "map_mod", "rev_mod_select", "blurt_mod_select", "scratch_mod"]: 
                 ui.update_select(select_id, choices=mods)
 
     @output
@@ -613,7 +720,7 @@ def server(input, output, session):
         return load_tasks()
 
     # ==========================
-    # READING ROOM LOGIC
+    # READING ROOM LOGIC (NO SAVING PDF)
     # ==========================
     @reactive.Effect
     @reactive.event(input.process_read_btn)
@@ -625,17 +732,18 @@ def server(input, output, session):
             try:
                 pdf_path = pdf_info[0]["datapath"]
                 
-                # Convert the PDF directly to a Base64 data URL in memory
+                # Convert PDF straight to Base64 in memory! No hard drive saving.
                 with open(pdf_path, "rb") as f:
-                    encoded_pdf = base64.b64encode(f.read()).decode("utf-8")
+                    pdf_b64 = base64.b64encode(f.read()).decode('utf-8')
                 
-                pdf_data_url = f"data:application/pdf;base64,{encoded_pdf}"
+                # Create a data URI to inject directly into the browser
+                data_uri = f"data:application/pdf;base64,{pdf_b64}"
                 
                 read_state.set({
                     "mode": "pdf", 
-                    "data": pdf_data_url
+                    "data": data_uri
                 })
-                ui.notification_show("PDF loaded directly into viewer (no local file saved).", type="message")
+                ui.notification_show("PDF loaded straight to memory! No files saved locally.", type="message")
             except Exception as e:
                 ui.notification_show(f"Failed to load PDF: {str(e)}", type="error")
                 
@@ -819,6 +927,34 @@ def server(input, output, session):
         await session.send_custom_message("update_editor", full_content) 
 
     # ==========================
+    # SCRATCHPAD LOGIC 
+    # ==========================
+    @reactive.Effect
+    @reactive.event(input.scratchpad_save_trigger)
+    def _save_scratchpad():
+        data_url = input.scratchpad_img_data()
+        filename = input.scratch_name().strip()
+        
+        if not filename:
+            ui.notification_show("Please provide an Image Name to save your drawing!", type="warning")
+            return
+            
+        if not data_url: return
+        
+        if not filename.endswith('.png'):
+            filename += '.png'
+            
+        header, encoded = data_url.split(",", 1)
+        mod_dir = os.path.join(BASE_PATH, input.scratch_mod())
+        os.makedirs(mod_dir, exist_ok=True)
+        
+        with open(os.path.join(mod_dir, filename), "wb") as f: 
+            f.write(base64.b64decode(encoded))
+            
+        ui.notification_show(f"Saved {filename} to {input.scratch_mod()}!", type="message")
+        refresh_trigger.set(refresh_trigger() + 1)
+
+    # ==========================
     # REVISION HUB LOGIC 
     # ==========================
     @output
@@ -957,7 +1093,7 @@ def server(input, output, session):
         df = load_revisions()
         if df.empty: return ui.markdown("_No stats yet._")
         return ui.div(ui.p(ui.tags.b("Total Time Studied: "), f"{round(df['Duration (min)'].sum(), 1)} mins"))
-    
+
     # ==========================
     # BLURT STUDIO LOGIC 
     # ==========================
