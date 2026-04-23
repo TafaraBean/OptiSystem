@@ -168,6 +168,7 @@ custom_js = """
                 let drawing = false;
                 let panning = false;
                 let lastPan = {x: 0, y: 0};
+                let lastPos = {x: 0, y: 0}; // Tracks the exact last point of the pen
                 
                 function getPos(e) {
                     const rect = canvas.getBoundingClientRect();
@@ -192,13 +193,8 @@ custom_js = """
                     e.preventDefault(); 
                     
                     drawing = true;
-                    const pos = getPos(e);
-                    ctx.beginPath();
-                    ctx.moveTo(pos.x, pos.y);
+                    lastPos = getPos(e);
                     
-                    // Apple Pencil Pressure sensitivity
-                    let pressure = e.pressure !== undefined ? e.pressure : 0.5;
-                    ctx.lineWidth = (pressure * 6) + 1; 
                     ctx.lineCap = 'round';
                     ctx.lineJoin = 'round';
                     ctx.strokeStyle = '#2c3e50';
@@ -224,12 +220,19 @@ custom_js = """
                     
                     const pos = getPos(e);
                     
+                    // High-performance drawing: Only draw the tiny new segment!
+                    ctx.beginPath();
+                    ctx.moveTo(lastPos.x, lastPos.y);
+                    
                     if (e.pressure !== undefined && e.pointerType === 'pen') {
-                        ctx.lineWidth = (e.pressure * 8) + 1; 
+                        ctx.lineWidth = (e.pressure * 8) + 1.5; 
                     }
                     
                     ctx.lineTo(pos.x, pos.y);
                     ctx.stroke();
+                    
+                    // Update the position for the next micro-segment
+                    lastPos = pos;
                 }
 
                 function endDraw(e) {
@@ -553,7 +556,7 @@ app_ui = ui.page_navbar(
         )
     ),
     
-    title="OptiSystem v6.31",
+    title="OptiSystem v6.32",
 )
 
 # --- SERVER ---
