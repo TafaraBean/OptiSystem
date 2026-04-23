@@ -149,128 +149,6 @@ custom_js = """
 
                 updateMindMap(easymde.value());
             }
-            
-            // --- APPLE PENCIL SCRATCHPAD LOGIC ---
-            const canvas = document.getElementById('scratchpad-canvas');
-            const container = document.getElementById('canvas-container');
-            
-            if (canvas && container) {
-                const ctx = canvas.getContext('2d');
-                
-                ctx.fillStyle = "white";
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                
-                container.scrollTop = (canvas.height - container.clientHeight) / 2;
-                container.scrollLeft = (canvas.width - container.clientWidth) / 2;
-                
-                let drawing = false;
-                let panning = false;
-                let activePointerId = null; 
-                let lastPan = {x: 0, y: 0};
-                let lastPos = {x: 0, y: 0}; 
-                let activeRect = null; // Memory leak fix: Cache the boundary rectangle
-                
-                function getPos(e, rect) {
-                    const scaleX = canvas.width / rect.width;
-                    const scaleY = canvas.height / rect.height;
-                    return {
-                        x: (e.clientX - rect.left) * scaleX,
-                        y: (e.clientY - rect.top) * scaleY
-                    };
-                }
-
-                function startDraw(e) {
-                    if (e.pointerType === 'touch') {
-                        panning = true;
-                        lastPan = {x: e.clientX, y: e.clientY};
-                        return;
-                    }
-                    
-                    e.preventDefault(); 
-                    
-                    drawing = true;
-                    panning = false; 
-                    activePointerId = e.pointerId; 
-                    
-                    // Grab DOM position once per stroke to avoid Layout Thrashing
-                    activeRect = canvas.getBoundingClientRect();
-                    
-                    lastPos = getPos(e, activeRect);
-                    ctx.lineCap = 'round';
-                    ctx.lineJoin = 'round';
-                    ctx.strokeStyle = '#2c3e50';
-                }
-
-                function draw(e) {
-                    if (e.pointerType === 'touch') {
-                        if (panning) {
-                            const dx = e.clientX - lastPan.x;
-                            const dy = e.clientY - lastPan.y;
-                            container.scrollLeft -= dx;
-                            container.scrollTop -= dy;
-                            lastPan = {x: e.clientX, y: e.clientY};
-                        }
-                        return;
-                    }
-                    
-                    if (!drawing) return;
-                    
-                    e.preventDefault();
-                    
-                    // Hover protection for M2/M4 Apple Pencils
-                    if (e.buttons === 0) return; 
-                    
-                    // HARDWARE ACCELERATION: Use getCoalescedEvents if available 
-                    // (Pulls the 240Hz Apple Pencil data that the browser missed between frames)
-                    const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-                    
-                    for (let ev of events) {
-                        const pos = getPos(ev, activeRect);
-                        
-                        ctx.beginPath();
-                        ctx.moveTo(lastPos.x, lastPos.y);
-                        
-                        let pressure = ev.pressure !== undefined ? ev.pressure : 0.5;
-                        ctx.lineWidth = (pressure * 8) + 1.5; 
-                        
-                        ctx.lineTo(pos.x, pos.y);
-                        ctx.stroke();
-                        
-                        lastPos = pos;
-                    }
-                }
-
-                function endDraw(e) {
-                    e.preventDefault();
-                    if (e.pointerType === 'pen' || e.pointerType === 'mouse') {
-                        drawing = false;
-                        if (e.pointerId === activePointerId) activePointerId = null;
-                    } else if (e.pointerType === 'touch') {
-                        if (e.pointerId === activePointerId) {
-                            panning = false;
-                            activePointerId = null;
-                        }
-                    }
-                }
-
-                canvas.addEventListener('pointerdown', startDraw, {passive: false});
-                canvas.addEventListener('pointermove', draw, {passive: false});
-                canvas.addEventListener('pointerup', endDraw, {passive: false});
-                canvas.addEventListener('pointercancel', endDraw, {passive: false});
-                canvas.addEventListener('pointerout', endDraw, {passive: false}); 
-                
-                window.saveScratchpad = function() {
-                    const dataURL = canvas.toDataURL('image/png');
-                    Shiny.setInputValue('scratchpad_img_data', dataURL);
-                    Shiny.setInputValue('scratchpad_save_trigger', Math.random());
-                };
-                
-                window.clearScratchpad = function() {
-                    ctx.fillStyle = "white";
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
-                };
-            }
-            
         }, 1000); 
         
         const observer = new MutationObserver((mutations) => {
@@ -510,29 +388,6 @@ app_ui = ui.page_navbar(
         )
     ),
 
-    ui.nav_panel("Scratchpad",
-        ui.layout_sidebar(
-            ui.sidebar(
-                ui.markdown("### **Apple Pencil Canvas**"),
-                ui.input_select("scratch_mod", "Select Module", get_module_names()),
-                ui.input_text("scratch_name", "Image Name", placeholder="e.g., cell_diagram"),
-                ui.input_action_button("save_scratch_btn", "Save & Sync PNG 💾", class_="btn-success w-100 mb-2", onclick="saveScratchpad()"),
-                ui.input_action_button("clear_scratch_btn", "Clear Canvas 🗑️", class_="btn-danger w-100", onclick="clearScratchpad()"),
-                ui.hr(),
-                ui.markdown("*Draw with Apple Pencil. Use your fingers to pan around the infinite canvas! Saving exports it straight to your module folder!*")
-            ),
-            ui.card(
-                ui.card_header("Digital Whiteboard (Infinite Canvas)"),
-                ui.div(
-                    ui.HTML('<div id="canvas-container" style="width: 100%; height: 75vh; overflow: hidden; background-color: #ced4da; border-radius: 8px; position: relative; touch-action: none; -webkit-user-select: none; user-select: none;">'
-                            '<canvas id="scratchpad-canvas" width="3000" height="3000" style="cursor: crosshair; touch-action: none; -webkit-user-select: none; user-select: none; background-color: white; box-shadow: 0px 4px 10px rgba(0,0,0,0.2);"></canvas>'
-                            '</div>'),
-                    style="padding: 0;"
-                )
-            )
-        )
-    ),
-
     ui.nav_panel("Revision Hub",
         ui.layout_sidebar(
             ui.sidebar(
@@ -564,7 +419,7 @@ app_ui = ui.page_navbar(
         )
     ),
     
-    title="OptiSystem v6.34",
+    title="OptiSystem v6.35",
 )
 
 # --- SERVER ---
@@ -728,7 +583,7 @@ def server(input, output, session):
             os.makedirs(os.path.join(BASE_PATH, name), exist_ok=True)
             refresh_trigger.set(refresh_trigger() + 1)
             mods = get_module_names()
-            for select_id in ["mod_select", "read_mod", "map_mod", "rev_mod_select", "blurt_mod_select", "scratch_mod"]: 
+            for select_id in ["mod_select", "read_mod", "map_mod", "rev_mod_select", "blurt_mod_select"]: 
                 ui.update_select(select_id, choices=mods)
 
     @output
@@ -960,34 +815,6 @@ def server(input, output, session):
         with open(os.path.join(mod_dir, filename), "wb") as f: f.write(base64.b64decode(encoded))
         full_content = input.map_content() + f"\n- ![{filename}](/files/{input.map_mod()}/{filename})"
         await session.send_custom_message("update_editor", full_content) 
-
-    # ==========================
-    # SCRATCHPAD LOGIC 
-    # ==========================
-    @reactive.Effect
-    @reactive.event(input.scratchpad_save_trigger)
-    def _save_scratchpad():
-        data_url = input.scratchpad_img_data()
-        filename = input.scratch_name().strip()
-        
-        if not filename:
-            ui.notification_show("Please provide an Image Name to save your drawing!", type="warning")
-            return
-            
-        if not data_url: return
-        
-        if not filename.endswith('.png'):
-            filename += '.png'
-            
-        header, encoded = data_url.split(",", 1)
-        mod_dir = os.path.join(BASE_PATH, input.scratch_mod())
-        os.makedirs(mod_dir, exist_ok=True)
-        
-        with open(os.path.join(mod_dir, filename), "wb") as f: 
-            f.write(base64.b64decode(encoded))
-            
-        ui.notification_show(f"Saved {filename} to {input.scratch_mod()}!", type="message")
-        refresh_trigger.set(refresh_trigger() + 1)
 
     # ==========================
     # REVISION HUB LOGIC 
