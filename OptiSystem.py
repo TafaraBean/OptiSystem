@@ -167,8 +167,9 @@ custom_js = """
                 
                 let drawing = false;
                 let panning = false;
+                let activePointerId = null; // Used to lock the specific interaction
                 let lastPan = {x: 0, y: 0};
-                let lastPos = {x: 0, y: 0}; // Tracks the exact last point of the pen
+                let lastPos = {x: 0, y: 0}; 
                 
                 function getPos(e) {
                     const rect = canvas.getBoundingClientRect();
@@ -182,74 +183,78 @@ custom_js = """
                 }
 
                 function startDraw(e) {
-                    // Strict Palm Rejection: Route touch to manual panning
-                    if (e.pointerType === 'touch') {
-                        panning = true;
-                        lastPan = {x: e.clientX, y: e.clientY};
-                        return;
-                    }
-                    
-                    // Stop browser from trying to natively hijack pen strokes
                     e.preventDefault(); 
                     
-                    drawing = true;
-                    lastPos = getPos(e);
-                    
-                    ctx.lineCap = 'round';
-                    ctx.lineJoin = 'round';
-                    ctx.strokeStyle = '#2c3e50';
+                    if (e.pointerType === 'pen' || e.pointerType === 'mouse') {
+                        // Pen priority: completely disable panning if pen touches down
+                        drawing = true;
+                        panning = false; 
+                        activePointerId = e.pointerId; // Lock onto the pen
+                        lastPos = getPos(e);
+                        ctx.lineCap = 'round';
+                        ctx.lineJoin = 'round';
+                        ctx.strokeStyle = '#2c3e50';
+                    } else if (e.pointerType === 'touch') {
+                        // Only allow touch panning if the pen is NOT actively drawing
+                        if (!drawing && !panning) {
+                            panning = true;
+                            activePointerId = e.pointerId; // Lock onto the finger
+                            lastPan = {x: e.clientX, y: e.clientY};
+                        }
+                    }
                 }
 
                 function draw(e) {
-                    if (e.pointerType === 'touch') {
-                        if (panning) {
-                            // Calculate manual pan distance
+                    e.preventDefault();
+                    
+                    if (e.pointerType === 'pen' || e.pointerType === 'mouse') {
+                        // Prevent hovering from triggering phantom lines (M2/M4 iPad feature)
+                        if (!drawing || e.buttons === 0) return; 
+                        
+                        const pos = getPos(e);
+                        ctx.beginPath();
+                        ctx.moveTo(lastPos.x, lastPos.y);
+                        
+                        let pressure = e.pressure !== undefined ? e.pressure : 0.5;
+                        ctx.lineWidth = (pressure * 8) + 1.5; 
+                        
+                        ctx.lineTo(pos.x, pos.y);
+                        ctx.stroke();
+                        
+                        lastPos = pos;
+                    } else if (e.pointerType === 'touch') {
+                        if (drawing) return; // Completely ignore palm/finger if pen is active
+                        
+                        // Strict pan tracking: ensures secondary fingers don't hijack the drag
+                        if (panning && e.pointerId === activePointerId) {
                             const dx = e.clientX - lastPan.x;
                             const dy = e.clientY - lastPan.y;
                             container.scrollLeft -= dx;
                             container.scrollTop -= dy;
                             lastPan = {x: e.clientX, y: e.clientY};
                         }
-                        return;
                     }
-                    
-                    if (!drawing) return;
-                    
-                    // Prevent default scrolling gestures while dragging Apple Pencil
-                    e.preventDefault();
-                    
-                    const pos = getPos(e);
-                    
-                    // High-performance drawing: Only draw the tiny new segment!
-                    ctx.beginPath();
-                    ctx.moveTo(lastPos.x, lastPos.y);
-                    
-                    if (e.pressure !== undefined && e.pointerType === 'pen') {
-                        ctx.lineWidth = (e.pressure * 8) + 1.5; 
-                    }
-                    
-                    ctx.lineTo(pos.x, pos.y);
-                    ctx.stroke();
-                    
-                    // Update the position for the next micro-segment
-                    lastPos = pos;
                 }
 
                 function endDraw(e) {
-                    if (e.pointerType === 'touch') {
-                        panning = false;
-                        return;
+                    e.preventDefault();
+                    if (e.pointerType === 'pen' || e.pointerType === 'mouse') {
+                        drawing = false;
+                        if (e.pointerId === activePointerId) activePointerId = null;
+                    } else if (e.pointerType === 'touch') {
+                        if (e.pointerId === activePointerId) {
+                            panning = false;
+                            activePointerId = null;
+                        }
                     }
-                    if (!drawing) return;
-                    drawing = false;
                 }
 
-                // Native Pointer Events mapping with passive:false to allow preventDefault
+                // Add passive:false to properly prevent Apple's native scrolling gestures
                 canvas.addEventListener('pointerdown', startDraw, {passive: false});
                 canvas.addEventListener('pointermove', draw, {passive: false});
-                canvas.addEventListener('pointerup', endDraw);
-                canvas.addEventListener('pointercancel', endDraw);
-                canvas.addEventListener('pointerout', endDraw); // Catch edge slips
+                canvas.addEventListener('pointerup', endDraw, {passive: false});
+                canvas.addEventListener('pointercancel', endDraw, {passive: false});
+                canvas.addEventListener('pointerout', endDraw, {passive: false}); 
                 
                 window.saveScratchpad = function() {
                     const dataURL = canvas.toDataURL('image/png');
@@ -516,8 +521,8 @@ app_ui = ui.page_navbar(
             ui.card(
                 ui.card_header("Digital Whiteboard (Infinite Canvas)"),
                 ui.div(
-                    ui.HTML('<div id="canvas-container" style="width: 100%; height: 75vh; overflow: hidden; background-color: #ced4da; border-radius: 8px; position: relative;">'
-                            '<canvas id="scratchpad-canvas" width="3000" height="3000" style="cursor: crosshair; touch-action: none; background-color: white; box-shadow: 0px 4px 10px rgba(0,0,0,0.2);"></canvas>'
+                    ui.HTML('<div id="canvas-container" style="width: 100%; height: 75vh; overflow: hidden; background-color: #ced4da; border-radius: 8px; position: relative; touch-action: none; -webkit-user-select: none; user-select: none;">'
+                            '<canvas id="scratchpad-canvas" width="3000" height="3000" style="cursor: crosshair; touch-action: none; -webkit-user-select: none; user-select: none; background-color: white; box-shadow: 0px 4px 10px rgba(0,0,0,0.2);"></canvas>'
                             '</div>'),
                     style="padding: 0;"
                 )
@@ -556,7 +561,7 @@ app_ui = ui.page_navbar(
         )
     ),
     
-    title="OptiSystem v6.32",
+    title="OptiSystem v6.33",
 )
 
 # --- SERVER ---
