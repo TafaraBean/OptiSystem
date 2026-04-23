@@ -152,11 +152,18 @@ custom_js = """
             
             // --- APPLE PENCIL SCRATCHPAD LOGIC ---
             const canvas = document.getElementById('scratchpad-canvas');
-            if (canvas) {
+            const container = document.getElementById('canvas-container');
+            
+            if (canvas && container) {
                 const ctx = canvas.getContext('2d');
+                
                 // Fill background with white so it saves properly as a PNG
                 ctx.fillStyle = "white";
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                // Center the infinite canvas on load
+                container.scrollTop = (canvas.height - container.clientHeight) / 2;
+                container.scrollLeft = (canvas.width - container.clientWidth) / 2;
                 
                 let drawing = false;
                 
@@ -164,23 +171,17 @@ custom_js = """
                     const rect = canvas.getBoundingClientRect();
                     const scaleX = canvas.width / rect.width;
                     const scaleY = canvas.height / rect.height;
-                    let clientX = e.clientX;
-                    let clientY = e.clientY;
-                    
-                    if(e.touches && e.touches.length > 0) {
-                        clientX = e.touches[0].clientX;
-                        clientY = e.touches[0].clientY;
-                    }
                     
                     return {
-                        x: (clientX - rect.left) * scaleX,
-                        y: (clientY - rect.top) * scaleY
+                        x: (e.clientX - rect.left) * scaleX,
+                        y: (e.clientY - rect.top) * scaleY
                     };
                 }
 
                 function startDraw(e) {
-                    // Prevent page scrolling while drawing
-                    if(e.type !== 'mousedown') e.preventDefault(); 
+                    // Strict Palm Rejection: Ignore touch (fingers/palm), only allow pen (Apple Pencil) or mouse
+                    if (e.pointerType === 'touch') return;
+                    
                     drawing = true;
                     const pos = getPos(e);
                     ctx.beginPath();
@@ -195,8 +196,12 @@ custom_js = """
                 }
 
                 function draw(e) {
+                    if (e.pointerType === 'touch') return; // Palm rejection
                     if (!drawing) return;
-                    if(e.type !== 'mousemove') e.preventDefault();
+                    
+                    // Prevent scrolling while drawing with pen
+                    e.preventDefault();
+                    
                     const pos = getPos(e);
                     
                     if (e.pressure !== undefined && e.pointerType === 'pen') {
@@ -208,7 +213,8 @@ custom_js = """
                 }
 
                 function endDraw(e) {
-                    if(!drawing) return;
+                    if (e.pointerType === 'touch') return;
+                    if (!drawing) return;
                     drawing = false;
                 }
 
@@ -217,11 +223,7 @@ custom_js = """
                 canvas.addEventListener('pointermove', draw);
                 canvas.addEventListener('pointerup', endDraw);
                 canvas.addEventListener('pointercancel', endDraw);
-                
-                // Fallbacks
-                canvas.addEventListener('touchstart', startDraw, {passive: false});
-                canvas.addEventListener('touchmove', draw, {passive: false});
-                canvas.addEventListener('touchend', endDraw);
+                canvas.addEventListener('pointerout', endDraw); // Catch edge slips
                 
                 window.saveScratchpad = function() {
                     const dataURL = canvas.toDataURL('image/png');
@@ -474,7 +476,7 @@ app_ui = ui.page_navbar(
         )
     ),
 
-    # ---> NEW SCRATCHPAD TAB <---
+    # ---> UPDATED SCRATCHPAD TAB <---
     ui.nav_panel("Scratchpad",
         ui.layout_sidebar(
             ui.sidebar(
@@ -484,13 +486,15 @@ app_ui = ui.page_navbar(
                 ui.input_action_button("save_scratch_btn", "Save & Sync PNG 💾", class_="btn-success w-100 mb-2", onclick="saveScratchpad()"),
                 ui.input_action_button("clear_scratch_btn", "Clear Canvas 🗑️", class_="btn-danger w-100", onclick="clearScratchpad()"),
                 ui.hr(),
-                ui.markdown("*Draw freehand graphs, equations, or diagrams. Saving exports it straight to your module folder!*")
+                ui.markdown("*Draw with Apple Pencil. Use your fingers to pan around the infinite canvas! Saving exports it straight to your module folder!*")
             ),
             ui.card(
-                ui.card_header("Digital Whiteboard"),
+                ui.card_header("Digital Whiteboard (Infinite Canvas)"),
                 ui.div(
-                    ui.HTML('<canvas id="scratchpad-canvas" width="800" height="600" style="border: 1px solid #dee2e6; border-radius: 8px; cursor: crosshair; touch-action: none; background-color: white; max-width: 100%;"></canvas>'),
-                    style="display: flex; justify-content: center; align-items: center; background-color: #f8f9fa; padding: 20px; border-radius: 8px;"
+                    ui.HTML('<div id="canvas-container" style="width: 100%; height: 75vh; overflow: auto; background-color: #ced4da; border-radius: 8px; position: relative;">'
+                            '<canvas id="scratchpad-canvas" width="3000" height="3000" style="cursor: crosshair; touch-action: pan-x pan-y; background-color: white; box-shadow: 0px 4px 10px rgba(0,0,0,0.2);"></canvas>'
+                            '</div>'),
+                    style="padding: 0;"
                 )
             )
         )
@@ -527,7 +531,7 @@ app_ui = ui.page_navbar(
         )
     ),
     
-    title="OptiSystem v6.29",
+    title="OptiSystem v6.30",
 )
 
 # --- SERVER ---
