@@ -157,25 +157,22 @@ custom_js = """
             if (canvas && container) {
                 const ctx = canvas.getContext('2d');
                 
-                // Fill background with white so it saves properly as a PNG
                 ctx.fillStyle = "white";
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
                 
-                // Center the infinite canvas on load
                 container.scrollTop = (canvas.height - container.clientHeight) / 2;
                 container.scrollLeft = (canvas.width - container.clientWidth) / 2;
                 
                 let drawing = false;
                 let panning = false;
-                let activePointerId = null; // Used to lock the specific interaction
+                let activePointerId = null; 
                 let lastPan = {x: 0, y: 0};
                 let lastPos = {x: 0, y: 0}; 
+                let activeRect = null; // Memory leak fix: Cache the boundary rectangle
                 
-                function getPos(e) {
-                    const rect = canvas.getBoundingClientRect();
+                function getPos(e, rect) {
                     const scaleX = canvas.width / rect.width;
                     const scaleY = canvas.height / rect.height;
-                    
                     return {
                         x: (e.clientX - rect.left) * scaleX,
                         y: (e.clientY - rect.top) * scaleY
@@ -183,56 +180,63 @@ custom_js = """
                 }
 
                 function startDraw(e) {
+                    if (e.pointerType === 'touch') {
+                        panning = true;
+                        lastPan = {x: e.clientX, y: e.clientY};
+                        return;
+                    }
+                    
                     e.preventDefault(); 
                     
-                    if (e.pointerType === 'pen' || e.pointerType === 'mouse') {
-                        // Pen priority: completely disable panning if pen touches down
-                        drawing = true;
-                        panning = false; 
-                        activePointerId = e.pointerId; // Lock onto the pen
-                        lastPos = getPos(e);
-                        ctx.lineCap = 'round';
-                        ctx.lineJoin = 'round';
-                        ctx.strokeStyle = '#2c3e50';
-                    } else if (e.pointerType === 'touch') {
-                        // Only allow touch panning if the pen is NOT actively drawing
-                        if (!drawing && !panning) {
-                            panning = true;
-                            activePointerId = e.pointerId; // Lock onto the finger
-                            lastPan = {x: e.clientX, y: e.clientY};
-                        }
-                    }
+                    drawing = true;
+                    panning = false; 
+                    activePointerId = e.pointerId; 
+                    
+                    // Grab DOM position once per stroke to avoid Layout Thrashing
+                    activeRect = canvas.getBoundingClientRect();
+                    
+                    lastPos = getPos(e, activeRect);
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.strokeStyle = '#2c3e50';
                 }
 
                 function draw(e) {
-                    e.preventDefault();
-                    
-                    if (e.pointerType === 'pen' || e.pointerType === 'mouse') {
-                        // Prevent hovering from triggering phantom lines (M2/M4 iPad feature)
-                        if (!drawing || e.buttons === 0) return; 
-                        
-                        const pos = getPos(e);
-                        ctx.beginPath();
-                        ctx.moveTo(lastPos.x, lastPos.y);
-                        
-                        let pressure = e.pressure !== undefined ? e.pressure : 0.5;
-                        ctx.lineWidth = (pressure * 8) + 1.5; 
-                        
-                        ctx.lineTo(pos.x, pos.y);
-                        ctx.stroke();
-                        
-                        lastPos = pos;
-                    } else if (e.pointerType === 'touch') {
-                        if (drawing) return; // Completely ignore palm/finger if pen is active
-                        
-                        // Strict pan tracking: ensures secondary fingers don't hijack the drag
-                        if (panning && e.pointerId === activePointerId) {
+                    if (e.pointerType === 'touch') {
+                        if (panning) {
                             const dx = e.clientX - lastPan.x;
                             const dy = e.clientY - lastPan.y;
                             container.scrollLeft -= dx;
                             container.scrollTop -= dy;
                             lastPan = {x: e.clientX, y: e.clientY};
                         }
+                        return;
+                    }
+                    
+                    if (!drawing) return;
+                    
+                    e.preventDefault();
+                    
+                    // Hover protection for M2/M4 Apple Pencils
+                    if (e.buttons === 0) return; 
+                    
+                    // HARDWARE ACCELERATION: Use getCoalescedEvents if available 
+                    // (Pulls the 240Hz Apple Pencil data that the browser missed between frames)
+                    const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+                    
+                    for (let ev of events) {
+                        const pos = getPos(ev, activeRect);
+                        
+                        ctx.beginPath();
+                        ctx.moveTo(lastPos.x, lastPos.y);
+                        
+                        let pressure = ev.pressure !== undefined ? ev.pressure : 0.5;
+                        ctx.lineWidth = (pressure * 8) + 1.5; 
+                        
+                        ctx.lineTo(pos.x, pos.y);
+                        ctx.stroke();
+                        
+                        lastPos = pos;
                     }
                 }
 
@@ -249,7 +253,6 @@ custom_js = """
                     }
                 }
 
-                // Add passive:false to properly prevent Apple's native scrolling gestures
                 canvas.addEventListener('pointerdown', startDraw, {passive: false});
                 canvas.addEventListener('pointermove', draw, {passive: false});
                 canvas.addEventListener('pointerup', endDraw, {passive: false});
@@ -561,7 +564,7 @@ app_ui = ui.page_navbar(
         )
     ),
     
-    title="OptiSystem v6.33",
+    title="OptiSystem v6.34",
 )
 
 # --- SERVER ---
