@@ -166,6 +166,8 @@ custom_js = """
                 container.scrollLeft = (canvas.width - container.clientWidth) / 2;
                 
                 let drawing = false;
+                let panning = false;
+                let lastPan = {x: 0, y: 0};
                 
                 function getPos(e) {
                     const rect = canvas.getBoundingClientRect();
@@ -179,8 +181,15 @@ custom_js = """
                 }
 
                 function startDraw(e) {
-                    // Strict Palm Rejection: Ignore touch (fingers/palm), only allow pen (Apple Pencil) or mouse
-                    if (e.pointerType === 'touch') return;
+                    // Strict Palm Rejection: Route touch to manual panning
+                    if (e.pointerType === 'touch') {
+                        panning = true;
+                        lastPan = {x: e.clientX, y: e.clientY};
+                        return;
+                    }
+                    
+                    // Stop browser from trying to natively hijack pen strokes
+                    e.preventDefault(); 
                     
                     drawing = true;
                     const pos = getPos(e);
@@ -196,10 +205,21 @@ custom_js = """
                 }
 
                 function draw(e) {
-                    if (e.pointerType === 'touch') return; // Palm rejection
+                    if (e.pointerType === 'touch') {
+                        if (panning) {
+                            // Calculate manual pan distance
+                            const dx = e.clientX - lastPan.x;
+                            const dy = e.clientY - lastPan.y;
+                            container.scrollLeft -= dx;
+                            container.scrollTop -= dy;
+                            lastPan = {x: e.clientX, y: e.clientY};
+                        }
+                        return;
+                    }
+                    
                     if (!drawing) return;
                     
-                    // Prevent scrolling while drawing with pen
+                    // Prevent default scrolling gestures while dragging Apple Pencil
                     e.preventDefault();
                     
                     const pos = getPos(e);
@@ -213,14 +233,17 @@ custom_js = """
                 }
 
                 function endDraw(e) {
-                    if (e.pointerType === 'touch') return;
+                    if (e.pointerType === 'touch') {
+                        panning = false;
+                        return;
+                    }
                     if (!drawing) return;
                     drawing = false;
                 }
 
-                // Native Pointer Events (Perfect for iPad/Apple Pencil)
-                canvas.addEventListener('pointerdown', startDraw);
-                canvas.addEventListener('pointermove', draw);
+                // Native Pointer Events mapping with passive:false to allow preventDefault
+                canvas.addEventListener('pointerdown', startDraw, {passive: false});
+                canvas.addEventListener('pointermove', draw, {passive: false});
                 canvas.addEventListener('pointerup', endDraw);
                 canvas.addEventListener('pointercancel', endDraw);
                 canvas.addEventListener('pointerout', endDraw); // Catch edge slips
@@ -476,7 +499,6 @@ app_ui = ui.page_navbar(
         )
     ),
 
-    # ---> UPDATED SCRATCHPAD TAB <---
     ui.nav_panel("Scratchpad",
         ui.layout_sidebar(
             ui.sidebar(
@@ -491,8 +513,8 @@ app_ui = ui.page_navbar(
             ui.card(
                 ui.card_header("Digital Whiteboard (Infinite Canvas)"),
                 ui.div(
-                    ui.HTML('<div id="canvas-container" style="width: 100%; height: 75vh; overflow: auto; background-color: #ced4da; border-radius: 8px; position: relative;">'
-                            '<canvas id="scratchpad-canvas" width="3000" height="3000" style="cursor: crosshair; touch-action: pan-x pan-y; background-color: white; box-shadow: 0px 4px 10px rgba(0,0,0,0.2);"></canvas>'
+                    ui.HTML('<div id="canvas-container" style="width: 100%; height: 75vh; overflow: hidden; background-color: #ced4da; border-radius: 8px; position: relative;">'
+                            '<canvas id="scratchpad-canvas" width="3000" height="3000" style="cursor: crosshair; touch-action: none; background-color: white; box-shadow: 0px 4px 10px rgba(0,0,0,0.2);"></canvas>'
                             '</div>'),
                     style="padding: 0;"
                 )
@@ -531,7 +553,7 @@ app_ui = ui.page_navbar(
         )
     ),
     
-    title="OptiSystem v6.30",
+    title="OptiSystem v6.31",
 )
 
 # --- SERVER ---
@@ -724,7 +746,7 @@ def server(input, output, session):
         return load_tasks()
 
     # ==========================
-    # READING ROOM LOGIC (NO SAVING PDF)
+    # READING ROOM LOGIC
     # ==========================
     @reactive.Effect
     @reactive.event(input.process_read_btn)
@@ -736,11 +758,9 @@ def server(input, output, session):
             try:
                 pdf_path = pdf_info[0]["datapath"]
                 
-                # Convert PDF straight to Base64 in memory! No hard drive saving.
                 with open(pdf_path, "rb") as f:
                     pdf_b64 = base64.b64encode(f.read()).decode('utf-8')
                 
-                # Create a data URI to inject directly into the browser
                 data_uri = f"data:application/pdf;base64,{pdf_b64}"
                 
                 read_state.set({
