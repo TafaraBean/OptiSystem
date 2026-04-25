@@ -572,11 +572,7 @@ app_ui = ui.page_navbar(
         )
     ),
     
-<<<<<<< HEAD
     title="OptiSystem v6.40",
-=======
-    title="OptiSystem v6.35",
->>>>>>> 8f1ec168d5a1ccde14f8819912af5902458f648b
 )
 
 # --- SERVER ---
