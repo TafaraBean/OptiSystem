@@ -3,6 +3,7 @@ import pandas as pd
 import base64
 import time
 import re
+import random
 from datetime import datetime
 from shiny import App, render, ui, reactive
 
@@ -10,6 +11,7 @@ from shiny import App, render, ui, reactive
 BASE_PATH = os.path.join(os.getcwd(), "OptiSystem_Data")
 TASK_LOG = os.path.join(BASE_PATH, "master_tasks.csv")
 REV_LOG = os.path.join(BASE_PATH, "revision_log.csv")
+NODE_LOG = os.path.join(BASE_PATH, "node_mastery.csv") # New Tracking File
 
 if not os.path.exists(BASE_PATH):
     os.makedirs(BASE_PATH)
@@ -54,6 +56,11 @@ custom_js = """
     .kpi-val.encoding { color: #0dcaf0; }
     .kpi-title { font-size: 1em; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; }
     
+    .streak-glow { box-shadow: 0 0 20px 5px rgba(255, 193, 7, 0.6) !important; border-color: #ffc107 !important; transition: all 0.3s ease; }
+    .mcq-btn { text-align: left; padding: 15px; border-radius: 8px; font-size: 1.1em; transition: all 0.2s; white-space: normal; height: auto; }
+    .mcq-btn:hover { transform: translateX(5px); }
+    .flashcard-box { min-height: 300px; display: flex; flex-direction: column; justify-content: center; align-items: center; cursor: pointer; }
+    
     .blurt-review-panel { max-height: 600px; overflow-y: auto; overflow-x: auto; padding: 15px; background: #fff; border-radius: 5px; border: 1px solid #eee; word-wrap: break-word; overflow-wrap: break-word; }
     .blurt-review-panel > * { max-width: 100%; }
     
@@ -62,6 +69,9 @@ custom_js = """
     .aligned-row { border: 1px solid #dee2e6; border-radius: 5px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     
     .katex-display { overflow-x: auto; overflow-y: hidden; max-width: 100%; padding-bottom: 5px; }
+    
+    #loot-counter { font-weight: 800; color: #198754; background: #e8f5e9; padding: 8px 15px; border-radius: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s ease; display: inline-block; font-size: 1.1em; }
+    .loot-pop { transform: scale(1.15); background: #d4edda; box-shadow: 0 0 15px rgba(25, 135, 84, 0.5); }
 </style>
 
 <script>
@@ -126,7 +136,8 @@ custom_js = """
                     timeout = setTimeout(function() {
                         const content = easymde.value();
                         Shiny.setInputValue('map_content', content); 
-                        updateMindMap(content); 
+                        // Ask Python to inject colors before updating the map
+                        Shiny.setInputValue('map_content_for_map', content, {priority: 'event'});
                     }, 300); 
                 });
 
@@ -147,100 +158,67 @@ custom_js = """
                     }
                 });
 
-                updateMindMap(easymde.value());
+                const initial_content = easymde.value();
+                Shiny.setInputValue('map_content_for_map', initial_content, {priority: 'event'});
             }
-            
-            // --- APPLE PENCIL SCRATCHPAD LOGIC ---
-            const canvas = document.getElementById('scratchpad-canvas');
-            if (canvas) {
-                const ctx = canvas.getContext('2d');
-                // Fill background with white so it saves properly as a PNG
-                ctx.fillStyle = "white";
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                
-                let drawing = false;
-                
-                function getPos(e) {
-                    const rect = canvas.getBoundingClientRect();
-                    const scaleX = canvas.width / rect.width;
-                    const scaleY = canvas.height / rect.height;
-                    let clientX = e.clientX;
-                    let clientY = e.clientY;
-                    
-                    if(e.touches && e.touches.length > 0) {
-                        clientX = e.touches[0].clientX;
-                        clientY = e.touches[0].clientY;
-                    }
-                    
-                    return {
-                        x: (clientX - rect.left) * scaleX,
-                        y: (clientY - rect.top) * scaleY
-                    };
-                }
-
-                function startDraw(e) {
-                    // Prevent page scrolling while drawing
-                    if(e.type !== 'mousedown') e.preventDefault(); 
-                    drawing = true;
-                    const pos = getPos(e);
-                    ctx.beginPath();
-                    ctx.moveTo(pos.x, pos.y);
-                    
-                    // Apple Pencil Pressure sensitivity
-                    let pressure = e.pressure !== undefined ? e.pressure : 0.5;
-                    ctx.lineWidth = (pressure * 6) + 1; 
-                    ctx.lineCap = 'round';
-                    ctx.lineJoin = 'round';
-                    ctx.strokeStyle = '#2c3e50';
-                }
-
-                function draw(e) {
-                    if (!drawing) return;
-                    if(e.type !== 'mousemove') e.preventDefault();
-                    const pos = getPos(e);
-                    
-                    if (e.pressure !== undefined && e.pointerType === 'pen') {
-                        ctx.lineWidth = (e.pressure * 8) + 1; 
-                    }
-                    
-                    ctx.lineTo(pos.x, pos.y);
-                    ctx.stroke();
-                }
-
-                function endDraw(e) {
-                    if(!drawing) return;
-                    drawing = false;
-                }
-
-                // Native Pointer Events (Perfect for iPad/Apple Pencil)
-                canvas.addEventListener('pointerdown', startDraw);
-                canvas.addEventListener('pointermove', draw);
-                canvas.addEventListener('pointerup', endDraw);
-                canvas.addEventListener('pointercancel', endDraw);
-                
-                // Fallbacks
-                canvas.addEventListener('touchstart', startDraw, {passive: false});
-                canvas.addEventListener('touchmove', draw, {passive: false});
-                canvas.addEventListener('touchend', endDraw);
-                
-                window.saveScratchpad = function() {
-                    const dataURL = canvas.toDataURL('image/png');
-                    Shiny.setInputValue('scratchpad_img_data', dataURL);
-                    Shiny.setInputValue('scratchpad_save_trigger', Math.random());
-                };
-                
-                window.clearScratchpad = function() {
-                    ctx.fillStyle = "white";
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
-                };
-            }
-            
         }, 1000); 
+        
+        // --- READING ROOM LOOT COUNTER LOGIC ---
+        document.addEventListener('input', function(e) {
+            if (e.target && e.target.id === 'read_note_main') {
+                const content = e.target.value;
+                const counterEl = document.getElementById('loot-counter');
+                if (counterEl) {
+                    // Triggers the completionist reward loop by counting '?'
+                    const count = (content.match(/[?]/g) || []).length;
+                    const currentCount = parseInt(counterEl.getAttribute('data-count') || '0');
+                    
+                    if (count !== currentCount) {
+                        counterEl.innerText = `Flashcards Captured: ${count} 💎`;
+                        counterEl.setAttribute('data-count', count);
+                        
+                        if (count > currentCount) {
+                            counterEl.classList.add('loot-pop');
+                            setTimeout(() => counterEl.classList.remove('loot-pop'), 300);
+                        }
+                    }
+                }
+            }
+        });
         
         const observer = new MutationObserver((mutations) => {
             attachSyncScroll();
         });
         observer.observe(document.body, { childList: true, subtree: true });
+    });
+
+    Shiny.addCustomMessageHandler('render_colored_map', function(colored_md) {
+        updateMindMap(colored_md);
+    });
+
+    // --- NEW BLOB GENERATOR FOR LARGE PDFS ---
+    let currentPdfUrl = null;
+    Shiny.addCustomMessageHandler('load_pdf_blob', function(dataUri) {
+        setTimeout(async function() {
+            const iframe = document.getElementById('pdf-viewer-iframe');
+            if (iframe) {
+                try {
+                    // Use native fetch to rapidly convert base64 payload to memory blob
+                    const res = await fetch(dataUri);
+                    const blob = await res.blob();
+                    
+                    // Clear old blob to prevent memory leaks
+                    if (currentPdfUrl) {
+                        URL.revokeObjectURL(currentPdfUrl);
+                    }
+                    
+                    currentPdfUrl = URL.createObjectURL(blob);
+                    iframe.src = currentPdfUrl;
+                } catch (e) {
+                    console.error("Failed to load PDF blob:", e);
+                }
+            }
+        }, 300); // 300ms delay ensures the UI has fully generated the iframe DOM element
     });
 
     document.addEventListener('paste', function(e) {
@@ -266,7 +244,7 @@ custom_js = """
 
     Shiny.addCustomMessageHandler('update_editor', function(markdown) {
         if (window.easymde_editor) { window.easymde_editor.value(markdown); }
-        updateMindMap(markdown);
+        Shiny.setInputValue('map_content_for_map', markdown, {priority: 'event'});
     });
 
     Shiny.addCustomMessageHandler('insert_at_cursor', function(payload) {
@@ -352,6 +330,93 @@ def load_revisions():
             return df
         except: pass
     return pd.DataFrame(columns=["Module", "Map", "Date", "Duration (min)", "Activity"])
+
+def load_node_mastery():
+    if os.path.exists(NODE_LOG):
+        try:
+            df = pd.read_csv(NODE_LOG)
+            for col in ["Module", "Map", "Node_Raw", "Attempts", "Correct"]:
+                if col not in df.columns: df[col] = 0 if col in ["Attempts", "Correct"] else ""
+            return df
+        except: pass
+    return pd.DataFrame(columns=["Module", "Map", "Node_Raw", "Attempts", "Correct"])
+
+def normalize_text(t):
+    """Bulletproof string normalizer to fix invisible Markdown/PDF characters"""
+    if pd.isna(t): return ""
+    text = str(t).lower()
+    # Remove all non-alphanumeric chars except spaces to ensure matching is bulletproof
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    # Collapse multiple spaces into one and strip edges
+    return re.sub(r'\s+', ' ', text).strip()
+
+def update_node_mastery(module, map_name, node_raw, is_correct):
+    if not map_name: return
+    # STRICT NORMALIZATION: Always replace spaces with underscores for DB tracking
+    map_name = map_name.strip().replace(" ", "_")
+    if not map_name.endswith(".md"): map_name += ".md"
+    
+    df = load_node_mastery()
+    norm_node = normalize_text(node_raw)
+    
+    # Create a normalized temporary column for safe matching
+    df['norm_raw'] = df['Node_Raw'].apply(normalize_text)
+    mask = (df["Module"] == module) & (df["Map"] == map_name) & (df['norm_raw'] == norm_node)
+    
+    if mask.any():
+        idx = df.index[mask][0]
+        df.at[idx, "Attempts"] += 1
+        if is_correct: df.at[idx, "Correct"] += 1
+    else:
+        new_row = pd.DataFrame({
+            "Module": [module], "Map": [map_name], "Node_Raw": [str(node_raw).strip()],
+            "Attempts": [1], "Correct": [1 if is_correct else 0]
+        })
+        df = pd.concat([df, new_row], ignore_index=True)
+        
+    # Drop temporary column before saving
+    if 'norm_raw' in df.columns:
+        df = df.drop(columns=['norm_raw'])
+        
+    df.to_csv(NODE_LOG, index=False)
+
+def inject_mastery_colors(module, map_name, raw_md):
+    if not map_name: return raw_md
+    
+    # STRICT NORMALIZATION: Ensure we always lookup the version with underscores
+    map_name = map_name.strip().replace(" ", "_")
+    if not map_name.endswith(".md"): map_name += ".md"
+    
+    df = load_node_mastery()
+    mask = (df["Module"] == module) & (df["Map"] == map_name)
+    map_df = df[mask]
+    
+    score_dict = {}
+    for _, row in map_df.iterrows():
+        score_dict[normalize_text(row["Node_Raw"])] = row["Correct"] / row["Attempts"] if row["Attempts"] > 0 else -1
+
+    lines = raw_md.split("\n")
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("```") and not stripped.startswith("$$"):
+            # Target ONLY headings to be colored on the mind map (allows leading spaces)
+            header_match = re.match(r'^(\s*#{1,6}\s)(.*)', line)
+
+            if header_match:
+                prefix, content = header_match.groups()
+                clean_content = content.strip() # BUG FIX: Strip invisible trailing \r that breaks HTML tags
+                raw_text = normalize_text(clean_content)
+                score = score_dict.get(raw_text, -1)
+
+                if score == -1: color = "#adb5bd" # Untested / Structural Node (Gray)
+                elif score < 0.60: color = "#dc3545" # Gap (Red)
+                elif score < 0.80: color = "#fd7e14" # Review (Orange)
+                else: color = "#198754" # Mastered (Green)
+
+                line = f"{prefix}<span style='color:{color}'>{clean_content}</span>"
+        new_lines.append(line)
+    return "\n".join(new_lines)
 
 def get_module_names():
     if not os.path.exists(BASE_PATH): return ["General"]
@@ -460,6 +525,8 @@ app_ui = ui.page_navbar(
                 ui.input_text("save_name", "File Name", placeholder="e.g., SAS_Unit_1"),
                 ui.input_action_button("save_btn", "Save Map", class_="btn-primary w-100 mb-2"),
                 ui.hr(),
+                ui.output_ui("target_gaps_ui"),
+                ui.hr(),
                 ui.markdown("### **Session Timer**"),
                 ui.input_action_button("start_sl_btn", "Start Note-taking", class_="btn-info w-100 mb-2"),
                 ui.input_action_button("end_sl_btn", "End Session & Log", class_="btn-danger w-100"),
@@ -468,30 +535,8 @@ app_ui = ui.page_navbar(
                     value="# Central Concept\n## Branch 1\n- Detail A\n\n- Example Math: $y_i$"),
             ),
             ui.card(
-                ui.card_header("Interactive Mind Map"),
+                ui.card_header(ui.HTML('Interactive Map <span style="float:right; font-size:0.8em; color:gray;">Legend: <span style="color:#198754">🟢 Mastered</span> | <span style="color:#fd7e14">🟠 Review</span> | <span style="color:#dc3545">🔴 Knowledge Gap</span> | ⚪ Untested / Structural</span>')),
                 ui.HTML('<svg id="mindmap"></svg>')
-            )
-        )
-    ),
-
-    # ---> NEW SCRATCHPAD TAB <---
-    ui.nav_panel("Scratchpad",
-        ui.layout_sidebar(
-            ui.sidebar(
-                ui.markdown("### **Apple Pencil Canvas**"),
-                ui.input_select("scratch_mod", "Select Module", get_module_names()),
-                ui.input_text("scratch_name", "Image Name", placeholder="e.g., cell_diagram"),
-                ui.input_action_button("save_scratch_btn", "Save & Sync PNG 💾", class_="btn-success w-100 mb-2", onclick="saveScratchpad()"),
-                ui.input_action_button("clear_scratch_btn", "Clear Canvas 🗑️", class_="btn-danger w-100", onclick="clearScratchpad()"),
-                ui.hr(),
-                ui.markdown("*Draw freehand graphs, equations, or diagrams. Saving exports it straight to your module folder!*")
-            ),
-            ui.card(
-                ui.card_header("Digital Whiteboard"),
-                ui.div(
-                    ui.HTML('<canvas id="scratchpad-canvas" width="800" height="600" style="border: 1px solid #dee2e6; border-radius: 8px; cursor: crosshair; touch-action: none; background-color: white; max-width: 100%;"></canvas>'),
-                    style="display: flex; justify-content: center; align-items: center; background-color: #f8f9fa; padding: 20px; border-radius: 8px;"
-                )
             )
         )
     ),
@@ -527,7 +572,7 @@ app_ui = ui.page_navbar(
         )
     ),
     
-    title="OptiSystem v6.29",
+    title="OptiSystem v6.40",
 )
 
 # --- SERVER ---
@@ -538,15 +583,24 @@ def server(input, output, session):
     sl_active = reactive.Value(False)
     sl_start_time = reactive.Value(0.0)
 
-    rev_active = reactive.Value(False)
+    # Revision Hub Session States (Locked to prevent UI jump bugs)
+    rev_phase = reactive.Value("setup") 
     rev_slides = reactive.Value([])
     rev_current_idx = reactive.Value(0)
     rev_start_time = reactive.Value(0.0)
+    rev_mcq_options = reactive.Value([])
+    rev_streak = reactive.Value(0)
+    rev_show_ans = reactive.Value(False)
+    rev_active_mod = reactive.Value("") 
+    rev_active_map = reactive.Value("") 
     
+    # Blurt Studio Session States
     blurt_state = reactive.Value("setup") 
     blurt_original = reactive.Value("")
     blurt_template = reactive.Value("")
     blurt_start_time = reactive.Value(0.0)
+    blurt_active_mod = reactive.Value("")
+    blurt_active_map = reactive.Value("")
 
     # ==========================
     # DASHBOARD LOGIC 
@@ -691,7 +745,7 @@ def server(input, output, session):
             os.makedirs(os.path.join(BASE_PATH, name), exist_ok=True)
             refresh_trigger.set(refresh_trigger() + 1)
             mods = get_module_names()
-            for select_id in ["mod_select", "read_mod", "map_mod", "rev_mod_select", "blurt_mod_select", "scratch_mod"]: 
+            for select_id in ["mod_select", "read_mod", "map_mod", "rev_mod_select", "blurt_mod_select"]: 
                 ui.update_select(select_id, choices=mods)
 
     @output
@@ -720,7 +774,7 @@ def server(input, output, session):
         return load_tasks()
 
     # ==========================
-    # READING ROOM LOGIC (NO SAVING PDF)
+    # READING ROOM LOGIC
     # ==========================
     @reactive.Effect
     @reactive.event(input.process_read_btn)
@@ -732,18 +786,16 @@ def server(input, output, session):
             try:
                 pdf_path = pdf_info[0]["datapath"]
                 
-                # Convert PDF straight to Base64 in memory! No hard drive saving.
                 with open(pdf_path, "rb") as f:
                     pdf_b64 = base64.b64encode(f.read()).decode('utf-8')
                 
-                # Create a data URI to inject directly into the browser
                 data_uri = f"data:application/pdf;base64,{pdf_b64}"
                 
                 read_state.set({
                     "mode": "pdf", 
                     "data": data_uri
                 })
-                ui.notification_show("PDF loaded straight to memory! No files saved locally.", type="message")
+                ui.notification_show("PDF loaded via memory Blob! No files saved locally.", type="message")
             except Exception as e:
                 ui.notification_show(f"Failed to load PDF: {str(e)}", type="error")
                 
@@ -764,19 +816,22 @@ def server(input, output, session):
         await session.send_custom_message("render_katex", None)
         
         if state["mode"] == "pdf":
+            await session.send_custom_message("load_pdf_blob", state["data"])
+            
             return ui.div(
                 ui.layout_columns(
                     ui.div(
-                        ui.tags.iframe(src=state["data"], width="100%", height="800px", style="border: none; border-radius: 5px;"),
+                        ui.tags.iframe(id="pdf-viewer-iframe", src="", width="100%", height="800px", style="border: none; border-radius: 5px;"),
                         class_="reading-source-pane", style="padding: 0; overflow: hidden;"
                     ),
                     ui.div(
+                        ui.div(ui.span("Flashcards Captured: 0 💎", id="loot-counter", **{"data-count": "0"}), style="margin-bottom: 10px; display: flex; justify-content: flex-end;"),
                         ui.input_text_area(
                             "read_note_main", 
                             label=None, 
                             placeholder="Draft your notes here while reading the PDF on the left...\n\nUse empty lines (Enter) to push your notes down so they physically align with the pages of the PDF on the left!\n\nTip: You can paste images directly here!", 
                             width="100%", 
-                            height="800px"
+                            height="760px"
                         ),
                         class_="reading-notes-pane sync-scroll-right"
                     ),
@@ -795,12 +850,13 @@ def server(input, output, session):
                         style="height: 800px; overflow-y: auto;"
                     ),
                     ui.div(
+                        ui.div(ui.span("Flashcards Captured: 0 💎", id="loot-counter", **{"data-count": "0"}), style="margin-bottom: 10px; display: flex; justify-content: flex-end;"),
                         ui.input_text_area(
                             "read_note_main", 
                             label=None, 
                             placeholder="Draft your notes here...\n\nUse empty lines (Enter) to push your notes down so they physically map and align with the text on the left!\n\nTip: You can paste images directly here!", 
                             width="100%", 
-                            height="800px"
+                            height="760px"
                         ),
                         class_="reading-notes-pane sync-scroll-right"
                     ),
@@ -902,7 +958,16 @@ def server(input, output, session):
     def map_loader_ui():
         refresh_trigger() 
         maps = get_saved_maps(input.map_mod())
-        return ui.input_select("selected_map", "Load Saved Map", maps) if maps else ui.markdown("_No saved maps_")
+        sel = None
+        if maps:
+            with reactive.isolate():
+                try:
+                    current = input.selected_map()
+                    if current in maps: sel = current
+                except Exception: pass
+            if not sel: sel = maps[0]
+            return ui.input_select("selected_map", "Load Saved Map", choices=maps, selected=sel)
+        return ui.markdown("_No saved maps_")
 
     @reactive.Effect
     @reactive.event(input.load_btn)
@@ -912,6 +977,57 @@ def server(input, output, session):
             ui.update_text("save_name", value=input.selected_map().replace(".md", ""))
             await session.send_custom_message("update_editor", content) 
         except Exception as e: ui.notification_show(f"Error: {str(e)}", type="error")
+
+    @reactive.Effect
+    @reactive.event(input.map_content_for_map)
+    async def _update_map_visual():
+        raw_md = input.map_content_for_map()
+        map_name = input.save_name() if input.save_name() else input.selected_map()
+        if map_name:
+            map_name = map_name.strip().replace(" ", "_")
+            if not map_name.endswith(".md"): map_name += ".md"
+        colored_md = inject_mastery_colors(input.map_mod(), map_name, raw_md)
+        await session.send_custom_message("render_colored_map", colored_md)
+
+    @output
+    @render.ui
+    def target_gaps_ui():
+        refresh_trigger()
+        map_name = input.save_name() if input.save_name() else input.selected_map()
+        if not map_name: return ui.div()
+        map_name = map_name.strip().replace(" ", "_")
+        if not map_name.endswith(".md"): map_name += ".md"
+
+        df = load_node_mastery()
+        mask = (df["Module"] == input.map_mod()) & (df["Map"] == map_name) & (df["Attempts"] > 0)
+        map_df = df[mask].copy()
+
+        if map_df.empty: return ui.div(ui.p("Start revising to reveal knowledge gaps!", class_="text-muted text-center", style="font-size: 0.85em;"))
+
+        map_df["Score"] = map_df["Correct"] / map_df["Attempts"]
+        # Sort by worst score first, breaking ties by most attempts (highest friction)
+        gaps = map_df.sort_values(by=["Score", "Attempts"], ascending=[True, False]).head(3)
+
+        items = []
+        for _, row in gaps.iterrows():
+            score_pct = int(row["Score"] * 100)
+            color = "danger" if score_pct < 60 else "warning" if score_pct < 80 else "success"
+            display_text = row["Node_Raw"][:40] + "..." if len(row["Node_Raw"]) > 40 else row["Node_Raw"]
+            
+            items.append(
+                ui.div(
+                    ui.span(f"{score_pct}%", class_=f"badge bg-{color} me-2"),
+                    ui.span(display_text, style="font-size: 0.9em; font-weight: 500;"),
+                    class_="d-flex align-items-center mb-2 p-2 border rounded shadow-sm bg-white"
+                )
+            )
+
+        if not items: return ui.div()
+        return ui.div(
+            ui.markdown("#### **🎯 Target Gaps**"),
+            ui.p("Nodes requiring active recall:", style="font-size: 0.85em; color: gray;"),
+            ui.div(*items)
+        )
 
     @reactive.Effect
     @reactive.event(input.pasted_image_trigger)
@@ -927,157 +1043,239 @@ def server(input, output, session):
         await session.send_custom_message("update_editor", full_content) 
 
     # ==========================
-    # SCRATCHPAD LOGIC 
-    # ==========================
-    @reactive.Effect
-    @reactive.event(input.scratchpad_save_trigger)
-    def _save_scratchpad():
-        data_url = input.scratchpad_img_data()
-        filename = input.scratch_name().strip()
-        
-        if not filename:
-            ui.notification_show("Please provide an Image Name to save your drawing!", type="warning")
-            return
-            
-        if not data_url: return
-        
-        if not filename.endswith('.png'):
-            filename += '.png'
-            
-        header, encoded = data_url.split(",", 1)
-        mod_dir = os.path.join(BASE_PATH, input.scratch_mod())
-        os.makedirs(mod_dir, exist_ok=True)
-        
-        with open(os.path.join(mod_dir, filename), "wb") as f: 
-            f.write(base64.b64decode(encoded))
-            
-        ui.notification_show(f"Saved {filename} to {input.scratch_mod()}!", type="message")
-        refresh_trigger.set(refresh_trigger() + 1)
-
-    # ==========================
     # REVISION HUB LOGIC 
     # ==========================
+    def generate_mcq_opts(idx, slides):
+        if not slides: return []
+        correct = slides[idx]["raw"]
+        # Extract distractors from other flashcards in the same deck
+        distractors = list(set([s["raw"] for i, s in enumerate(slides) if i != idx and s["raw"] != correct]))
+        random.shuffle(distractors)
+        opts = [correct] + distractors[:3]
+        
+        # Pad with placeholders if the deck is too small to have 3 distinct distractors
+        while len(opts) < 4: 
+            opts.append(f"Conceptual Distractor (Deck too small)")
+            
+        random.shuffle(opts)
+        return opts
+
     @output
     @render.ui
     def rev_map_loader_ui():
         refresh_trigger()
         maps = get_saved_maps(input.rev_mod_select())
-        return ui.input_select("rev_selected_map", "Select Map to Revise", maps) if maps else ui.markdown("_No saved maps_")
+        sel = None
+        if maps:
+            with reactive.isolate():
+                try:
+                    current = input.rev_selected_map()
+                    if current in maps: sel = current
+                except Exception: pass
+            if not sel: sel = maps[0]
+            return ui.input_select("rev_selected_map", "Select Map to Revise", choices=maps, selected=sel)
+        return ui.markdown("_No saved maps_")
 
     @reactive.Effect
     @reactive.event(input.start_rev_btn)
     def _start_revision():
         if not input.rev_selected_map(): return
-        path = os.path.join(BASE_PATH, input.rev_mod_select(), input.rev_selected_map())
+        
+        # --- LOCK THE SESSION STATE ---
+        mod_locked = input.rev_mod_select()
+        map_locked = input.rev_selected_map()
+        rev_active_mod.set(mod_locked)
+        rev_active_map.set(map_locked)
+        # ------------------------------
+        
+        path = os.path.join(BASE_PATH, mod_locked, map_locked)
         if not os.path.exists(path): return
         
         with open(path, "r") as f: lines = f.readlines()
         
         slides = []
-        path_stack = []
-        current_raw = []
+        current_heading = "General Concept"
+        current_answer = []
+        in_math, in_code = False, False
         
-        in_math = False
-        in_code = False
-        
-        def save_node():
-            if current_raw:
-                raw_text = "\n".join(current_raw).strip()
-                if raw_text:
-                    breadcrumb = " ➔ ".join([p[1] for p in path_stack]) if path_stack else "Root Node"
-                    slides.append({"breadcrumb": breadcrumb, "raw": raw_text})
-                current_raw.clear()
+        def save_card():
+            ans_text = "\n".join(current_answer).strip()
+            if ans_text:
+                slides.append({"breadcrumb": current_heading, "raw": ans_text})
+            current_answer.clear()
 
         for line in lines:
             stripped = line.strip()
             
             if stripped.startswith("`" * 3): in_code = not in_code
             if stripped.count("$$") % 2 != 0: in_math = not in_math
-                
-            is_new_node = False
-            level = 0
-            content = ""
             
             if not in_math and not in_code:
-                if re.match(r'^#{1,6}\s', line):
-                    is_new_node = True
-                    level = len(line) - len(line.lstrip('#'))
-                    content = line.lstrip('#').strip()
-                elif re.match(r'^\s*[-*+]\s', line):
-                    is_new_node = True
-                    level = 10 + len(line) - len(line.lstrip())
-                    content = line.strip().lstrip('-*+').strip()
-                elif re.match(r'^\s*\d+\.\s', line):
-                    is_new_node = True
-                    level = 10 + len(line) - len(line.lstrip())
-                    content = re.sub(r'^\s*\d+\.\s*', '', line).strip()
-
-            if is_new_node:
-                save_node() 
-                while path_stack and path_stack[-1][0] >= level: 
-                    path_stack.pop()
-                path_stack.append((level, content))
-                
-            current_raw.append(line.rstrip("\n"))
+                # If we hit a new heading, save the previous card and grab the new question
+                if re.match(r'^\s*#{1,6}\s', line):
+                    save_card()
+                    current_heading = line.lstrip(' #').strip()
+                elif stripped: # Group all bullets/text into the answer
+                    current_answer.append(line.rstrip('\n'))
+            else:
+                if stripped or current_answer:
+                    current_answer.append(line.rstrip('\n'))
             
-        save_node() 
+        save_card() 
         
         if not slides:
             slides = [{"breadcrumb": "Empty", "raw": "No content found."}]
             
         rev_slides.set(slides)
         rev_current_idx.set(0)
+        rev_streak.set(0)
+        rev_mcq_options.set(generate_mcq_opts(0, slides))
         rev_start_time.set(time.time())
-        rev_active.set(True)
+        rev_phase.set("easy") # Start in the low-friction warm-up phase
 
     @reactive.Effect
-    @reactive.event(input.next_slide)
-    def _next_slide():
-        if rev_current_idx() < len(rev_slides()) - 1: rev_current_idx.set(rev_current_idx() + 1)
+    @reactive.event(input.mcq_answer)
+    def _handle_mcq():
+        try:
+            ans = base64.b64decode(input.mcq_answer()).decode()
+        except:
+            ans = input.mcq_answer()
+            
+        slides, idx = rev_slides(), rev_current_idx()
+        correct = slides[idx]["raw"]
+        
+        is_correct = (ans == correct)
+        
+        # Dopamine Hook: Streaks
+        if is_correct:
+            rev_streak.set(rev_streak() + 1)
+            ui.notification_show("Correct! +1 Streak 🔥" if rev_streak() >=3 else "Correct!", type="message", duration=2)
+        else:
+            rev_streak.set(0)
+            ui.notification_show("Incorrect, but keep going!", type="warning", duration=2)
+            
+        # Auto-advance
+        if idx < len(slides) - 1:
+            rev_current_idx.set(idx + 1)
+            rev_mcq_options.set(generate_mcq_opts(idx + 1, slides))
+        else:
+            rev_phase.set("transition")
 
     @reactive.Effect
-    @reactive.event(input.prev_slide)
-    def _prev_slide():
-        if rev_current_idx() > 0: rev_current_idx.set(rev_current_idx() - 1)
+    @reactive.event(input.start_hard_mode_btn)
+    def _start_hard_mode():
+        rev_current_idx.set(0)
+        rev_show_ans.set(False)
+        rev_phase.set("hard")
 
     @reactive.Effect
-    @reactive.event(input.finish_slide)
-    def _finish_revision():
-        duration = round((time.time() - rev_start_time()) / 60, 2)
-        df = load_revisions()
-        new_row = pd.DataFrame({"Module": [input.rev_mod_select()], "Map": [input.rev_selected_map()], "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")], "Duration (min)": [duration], "Activity": ["Revision"]})
-        pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
-        rev_active.set(False)
+    @reactive.event(input.reveal_ans_btn)
+    def _reveal_ans():
+        rev_show_ans.set(True)
+
+    @reactive.Effect
+    @reactive.event(input.hard_answer)
+    def _handle_hard():
+        direction = input.hard_answer() # left or right
+        slides, idx = rev_slides(), rev_current_idx()
+        
+        # --- MASTERY TRACKING ---
+        node_question = slides[idx]["breadcrumb"]
+        is_correct = (direction == 'right')
+        
+        # Track directly to the locked session state to prevent UI jump bugs!
+        update_node_mastery(rev_active_mod(), rev_active_map(), node_question, is_correct)
         refresh_trigger.set(refresh_trigger() + 1)
-        ui.notification_show(f"Session Complete! Logged {duration} mins.", type="message")
+        # ------------------------
+        
+        if idx < len(slides) - 1:
+            rev_current_idx.set(idx + 1)
+            rev_show_ans.set(False)
+        else:
+            # Complete Revision Session
+            duration = round((time.time() - rev_start_time()) / 60, 2)
+            df = load_revisions()
+            new_row = pd.DataFrame({
+                "Module": [rev_active_mod()], 
+                "Map": [rev_active_map()], 
+                "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")], 
+                "Duration (min)": [duration], 
+                "Activity": ["Revision"]
+            })
+            pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
+            rev_phase.set("setup")
+            refresh_trigger.set(refresh_trigger() + 1)
+            ui.notification_show(f"Session Complete! Logged {duration} mins.", type="message")
 
     @output
     @render.ui
     async def revision_display_ui():
-        if not rev_active(): return ui.div(ui.h4("Ready to Review?", class_="text-center mt-4 text-muted"), style="min-height: 250px; display: flex; flex-direction: column; justify-content: center;")
-        slides, idx = rev_slides(), rev_current_idx()
+        phase = rev_phase()
+        
+        if phase == "setup": 
+            return ui.div(ui.h4("Ready to Review?", class_="text-center mt-4 text-muted"), style="min-height: 250px; display: flex; flex-direction: column; justify-content: center;")
+            
+        slides, idx, streak = rev_slides(), rev_current_idx(), rev_streak()
         await session.send_custom_message("render_katex", None)
         
-        display_raw = protect_math(slides[idx]["raw"])
-        
-        return ui.div(
-            ui.p(slides[idx]["breadcrumb"], class_="text-muted", style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px;"),
-            ui.hr(style="margin-top: 5px;"),
-            ui.div(
-                ui.markdown(display_raw), 
-                class_="slide-content", 
-                style="font-size: 1.6em; padding: 20px 10px; min-height: 250px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;"
-            ),
-            ui.hr(),
-            ui.div(
-                ui.input_action_button("prev_slide", "⬅️ Prev", class_="btn-light"),
-                ui.span(f" Node {idx + 1} of {len(slides)} ", style="margin: 0 15px; font-weight: bold; font-size: 1.1em;"),
-                ui.input_action_button("next_slide", "Next ➡️", class_="btn-primary"),
-                ui.input_action_button("finish_slide", "End Session", class_="btn-danger", style="float:right;"),
-                style="margin-top: 15px; text-align: center;"
-            ),
-            class_="card p-4 shadow-sm slide-container"
-        )
+        if phase == "easy":
+            card_class = "card p-4 shadow-sm slide-container"
+            if streak >= 3: card_class += " streak-glow" 
+            
+            opts = rev_mcq_options()
+            btn_html = "".join([f'<button class="btn btn-outline-secondary w-100 mb-3 mcq-btn" onclick="Shiny.setInputValue(\'mcq_answer\', \'{base64.b64encode(o.encode()).decode()}\', {{priority: \'event\'}})">{ui.markdown(protect_math(o))}</button>' for o in opts])
+            
+            streak_badge = f'<span class="badge bg-warning text-dark" style="font-size: 1.1em; float:right;">🔥 Streak: {streak}</span>' if streak > 0 else ""
+            
+            return ui.div(
+                ui.HTML(streak_badge),
+                ui.p("WARM-UP: IDENTIFY THE CONCEPT", class_="text-muted", style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px;"),
+                ui.h4(slides[idx]["breadcrumb"], class_="text-primary mb-4", style="font-weight: bold;"),
+                ui.HTML(btn_html),
+                ui.hr(),
+                ui.div(ui.span(f" Progress: {idx + 1} / {len(slides)} ", style="font-weight: bold; text-align: center; display: block;")),
+                class_=card_class
+            )
+            
+        elif phase == "transition":
+            return ui.div(
+                ui.h2("🎉 Warm-up Complete!"),
+                ui.p("Your brain is primed. You've easily identified the concepts.", class_="text-muted mb-4"),
+                ui.div(
+                    ui.h5("Now for the real challenge: Active Recall."),
+                    ui.p("In this phase, you must retrieve the answer entirely from memory *before* revealing it."),
+                    class_="p-3 mb-4", style="background: #f8f9fa; border-radius: 8px; border-left: 4px solid #dc3545;"
+                ),
+                ui.input_action_button("start_hard_mode_btn", "Enter Flashcard Mode 🔥", class_="btn-danger btn-lg w-100"),
+                class_="card p-4 shadow-sm text-center slide-container", style="min-height: 300px; display: flex; flex-direction: column; justify-content: center;"
+            )
+            
+        elif phase == "hard":
+            display_raw = protect_math(slides[idx]["raw"])
+            
+            if not rev_show_ans():
+                return ui.div(
+                    ui.p("ACTIVE RECALL", class_="text-muted", style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px;"),
+                    ui.hr(),
+                    ui.div(ui.h3(slides[idx]["breadcrumb"], class_="text-center"), class_="flashcard-box"),
+                    ui.hr(),
+                    ui.input_action_button("reveal_ans_btn", "Reveal Answer 👁️", class_="btn-primary w-100 btn-lg"),
+                    ui.p(f" Card {idx + 1} of {len(slides)} ", class_="text-center mt-3 text-muted"),
+                    class_="card p-4 shadow-sm slide-container"
+                )
+            else:
+                return ui.div(
+                    ui.p(slides[idx]["breadcrumb"], class_="text-muted", style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px;"),
+                    ui.hr(style="margin-top: 5px;"),
+                    ui.div(ui.markdown(display_raw), class_="slide-content flashcard-box", style="font-size: 1.6em; text-align: center;"),
+                    ui.hr(),
+                    ui.layout_columns(
+                        ui.HTML('<button class="btn btn-outline-danger btn-lg w-100" onclick="Shiny.setInputValue(\'hard_answer\', \'left\', {priority: \'event\'})">⬅️ Needs Review</button>'),
+                        ui.HTML('<button class="btn btn-outline-success btn-lg w-100" onclick="Shiny.setInputValue(\'hard_answer\', \'right\', {priority: \'event\'})">Got it ➡️</button>'),
+                        col_widths=(6, 6)
+                    ),
+                    class_="card p-4 shadow-sm slide-container"
+                )
 
     @output
     @render.table
@@ -1102,12 +1300,27 @@ def server(input, output, session):
     def blurt_map_loader_ui():
         refresh_trigger()
         maps = get_saved_maps(input.blurt_mod_select())
-        return ui.input_select("blurt_selected_map", "Select Map to Blurt", maps) if maps else ui.markdown("_No saved maps_")
+        sel = None
+        if maps:
+            with reactive.isolate():
+                try:
+                    current = input.blurt_selected_map()
+                    if current in maps: sel = current
+                except Exception: pass
+            if not sel: sel = maps[0]
+            return ui.input_select("blurt_selected_map", "Select Map to Blurt", choices=maps, selected=sel)
+        return ui.markdown("_No saved maps_")
 
     @reactive.Effect
     @reactive.event(input.start_blurt_btn)
     def _start_blurt():
         if not input.blurt_selected_map(): return
+        
+        # --- LOCK THE SESSION STATE ---
+        blurt_active_mod.set(input.blurt_mod_select())
+        blurt_active_map.set(input.blurt_selected_map())
+        # ------------------------------
+        
         path = os.path.join(BASE_PATH, input.blurt_mod_select(), input.blurt_selected_map())
         with open(path, "r") as f: content = f.read()
         blurt_original.set(content)
@@ -1123,7 +1336,13 @@ def server(input, output, session):
             blurt_state.set("review")
             duration = round((time.time() - blurt_start_time()) / 60, 2)
             df = load_revisions()
-            new_row = pd.DataFrame({"Module": [input.blurt_mod_select()], "Map": [input.blurt_selected_map()], "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")], "Duration (min)": [duration], "Activity": ["Blurt"]})
+            new_row = pd.DataFrame({
+                "Module": [blurt_active_mod()], 
+                "Map": [blurt_active_map()], 
+                "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")], 
+                "Duration (min)": [duration], 
+                "Activity": ["Blurt"]
+            })
             pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
             refresh_trigger.set(refresh_trigger() + 1)
 

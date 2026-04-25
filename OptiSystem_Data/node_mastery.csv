@@ -1,0 +1,8 @@
+Module,Map,Node_Raw,Attempts,Correct
+BWIN817,seminar_5_L15.md,How does dynamic scoring differ from traditional application and behavioral scoring?,3,3
+BWIN817,seminar_5_L15.md,What is the difference between the survivor function and the hazard function?,3,2
+BWIN817,seminar_5_L15.md,What is the difference between a Conditional PD and a Marginal PD?,3,2
+BWIN817,seminar_5_L15.md,How is the Expected Credit Loss (ECL) mathematically calculated under IFRS 9?,3,2
+BWIN817,seminar_5_L15.md,What is the fundamental difference between the Basel framework and IFRS 9?,3,1
+BWIN817,seminar_5_L15.md,What dictates whether a 12-month ECL or a Lifetime ECL is calculated under IFRS 9?,3,2
+BWIN817,seminar_5_L15.md,Why might a logistic regression model for discrete hazard rates omit a global intercept?,3,3
