@@ -11,10 +11,27 @@ from shiny import App, render, ui, reactive
 BASE_PATH = os.path.join(os.getcwd(), "OptiSystem_Data")
 TASK_LOG = os.path.join(BASE_PATH, "master_tasks.csv")
 REV_LOG = os.path.join(BASE_PATH, "revision_log.csv")
-NODE_LOG = os.path.join(BASE_PATH, "node_mastery.csv") # New Tracking File
+NODE_LOG = os.path.join(BASE_PATH, "node_mastery.csv") 
+STATS_LOG = os.path.join(BASE_PATH, "user_stats.csv") 
 
 if not os.path.exists(BASE_PATH):
     os.makedirs(BASE_PATH)
+
+# --- GAMIFICATION QUEST POOL ---
+QUEST_POOL = [
+    {"id": "q_30min_lab",  "desc": "Study for 30 mins in Study Lab", "xp": 300, "type": "duration", "target": 30, "activity": "Study Lab"},
+    {"id": "q_blurt",      "desc": "Complete a Blurt session",       "xp": 250, "type": "activity", "target": 1,  "activity": "Blurt"},
+    {"id": "q_accuracy80", "desc": "Achieve 80%+ accuracy in Rev.",  "xp": 400, "type": "accuracy", "target": 0.80,"activity": "Revision"},
+    {"id": "q_15min_any",  "desc": "Study for 15+ mins in one go",   "xp": 150, "type": "duration", "target": 15, "activity": "any"},
+    {"id": "q_rev_cards",  "desc": "Review 10+ flashcards",          "xp": 200, "type": "cards",    "target": 10, "activity": "Revision"},
+    {"id": "q_quick_rev",  "desc": "Complete a Revision Session",    "xp": 150, "type": "activity", "target": 1,  "activity": "Revision"}
+]
+
+def get_daily_quests():
+    """Seeds RNG with today's date so quests remain consistent all day."""
+    today_seed = int(datetime.now().strftime("%Y%m%d"))
+    rng = random.Random(today_seed)
+    return rng.sample(QUEST_POOL, 3)
 
 # --- JAVASCRIPT & CSS ---
 custom_js = """
@@ -72,9 +89,146 @@ custom_js = """
     
     #loot-counter { font-weight: 800; color: #198754; background: #e8f5e9; padding: 8px 15px; border-radius: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s ease; display: inline-block; font-size: 1.1em; }
     .loot-pop { transform: scale(1.15); background: #d4edda; box-shadow: 0 0 15px rgba(25, 135, 84, 0.5); }
+    
+    /* Gamification HUD Styles */
+    .gamification-hud {
+        position: fixed;
+        top: 8px;
+        right: 20px;
+        z-index: 1050;
+        display: flex;
+        gap: 15px;
+        background: rgba(255, 255, 255, 0.90);
+        padding: 6px 15px;
+        border-radius: 30px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        border: 1px solid #dee2e6;
+        backdrop-filter: blur(5px);
+        pointer-events: none; 
+    }
+    .hud-item { display: flex; align-items: center; font-weight: bold; font-size: 1.05em; }
+    .hud-streak { color: #ff8c00; }
+    .hud-level { color: #6f42c1; }
+    .hud-xp { color: #198754; font-size: 0.85em; background: #e8f5e9; padding: 2px 8px; border-radius: 12px; margin-left: 8px; border: 1px solid #c3e6cb;}
+    
+    /* Wild Encounter RPG Animations */
+    @keyframes popInRPG {
+        0% { transform: scale(0.8); opacity: 0; }
+        100% { transform: scale(1); opacity: 1; }
+    }
 </style>
 
 <script>
+    // --- RPG WILD ENCOUNTER & SURVIVAL ENGINE ---
+    window.keysSinceLastEncounter = 0;
+    window.hazardPeak = 20.0; // Default 20 minutes
+    window.lastEncounterTime = Date.now();
+    
+    window.initialConceptsLab = new Set();
+    window.isFirstLoadLab = true;
+
+    window.initialConceptsRead = new Set();
+    window.isFirstLoadRead = true;
+    
+    Shiny.addCustomMessageHandler('init_survival_model', function(peak) {
+        if (peak && peak > 5) { 
+            window.hazardPeak = peak; 
+            console.log("Survival Peak initialized:", peak, "minutes");
+        }
+    });
+    
+    function extractConceptsWithAnswers(text) {
+        const lines = text.split('\\n');
+        const concepts = [];
+        let currentConcept = null;
+        let currentAnswer = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const l = lines[i];
+            const trimmed = l.trim();
+            let isConcept = false;
+            let conceptText = "";
+
+            if (trimmed.startsWith('#') && trimmed.length > 5) {
+                isConcept = true;
+                conceptText = trimmed.replace(/^#+\\s*/, '');
+            } else if (trimmed.endsWith('?')) {
+                isConcept = true;
+                conceptText = trimmed;
+            }
+
+            if (isConcept) {
+                if (currentConcept) {
+                    concepts.push({ question: currentConcept, answer: currentAnswer.join('\\n').trim() });
+                }
+                currentConcept = conceptText;
+                currentAnswer = [];
+            } else {
+                if (currentConcept && trimmed && !trimmed.startsWith('```') && !trimmed.startsWith('$$')) {
+                    // Strip the bullets just for clean presentation in the reveal
+                    currentAnswer.push(trimmed.replace(/^[-*+]\\s*/, '')); 
+                }
+            }
+        }
+        if (currentConcept) {
+            concepts.push({ question: currentConcept, answer: currentAnswer.join('\\n').trim() });
+        }
+        return concepts;
+    }
+    
+    function battleFlash() {
+        const flash = document.createElement('div');
+        flash.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;box-shadow:inset 0 0 100px 30px rgba(220,53,69,0.7);z-index:9999;pointer-events:none;transition:opacity 0.8s;';
+        document.body.appendChild(flash);
+        setTimeout(() => flash.style.opacity = '0', 200);
+        setTimeout(() => flash.remove(), 1000);
+    }
+    
+    function checkEncounter(text, source) {
+        window.keysSinceLastEncounter++;
+        if (window.keysSinceLastEncounter > 150) { // Require at least 150 keystrokes between battles
+            let elapsedMinutes = (Date.now() - window.lastEncounterTime) / 60000;
+            
+            // --- SURVIVAL HAZARD MODEL ---
+            // Base chance is 0.5%. As user approaches their historical quit time, chance spikes.
+            let baseChance = 0.005;
+            let hazardRatio = Math.min(elapsedMinutes / window.hazardPeak, 2.5);
+            let dynamicChance = baseChance + (0.05 * Math.pow(hazardRatio, 2)); // Peaks around 10-15% in danger zone
+            
+            if (Math.random() < dynamicChance) { 
+                const allConcepts = extractConceptsWithAnswers(text);
+                
+                // Filter out questions that were loaded when the file opened
+                let activeConcepts = [];
+                if (source === 'lab') {
+                    if (window.isFirstLoadLab) {
+                        allConcepts.forEach(c => window.initialConceptsLab.add(c.question));
+                        window.isFirstLoadLab = false;
+                    }
+                    activeConcepts = allConcepts.filter(c => !window.initialConceptsLab.has(c.question));
+                } else {
+                    if (window.isFirstLoadRead) {
+                        allConcepts.forEach(c => window.initialConceptsRead.add(c.question));
+                        window.isFirstLoadRead = false;
+                    }
+                    activeConcepts = allConcepts.filter(c => !window.initialConceptsRead.has(c.question));
+                }
+
+                // Only ambush with a random, FULLY DRAFTED concept from the current session's batch
+                const fullyDrafted = activeConcepts.filter(c => c.answer && c.answer.length > 0);
+
+                if (fullyDrafted.length > 0) { 
+                    const idx = Math.floor(Math.random() * fullyDrafted.length); // Pick a random completed question
+                    battleFlash();
+                    Shiny.setInputValue('wild_encounter', fullyDrafted[idx], {priority: 'event'});
+                    
+                    window.keysSinceLastEncounter = 0; // Reset Pedometer
+                    window.lastEncounterTime = Date.now(); // Dopamine refresh resets fatigue curve!
+                }
+            }
+        }
+    }
+
     function updateMindMap(markdown) {
         const { Transformer } = window.markmap;
         const transformer = new Transformer();
@@ -136,9 +290,11 @@ custom_js = """
                     timeout = setTimeout(function() {
                         const content = easymde.value();
                         Shiny.setInputValue('map_content', content); 
-                        // Ask Python to inject colors before updating the map
                         Shiny.setInputValue('map_content_for_map', content, {priority: 'event'});
                     }, 300); 
+                    
+                    // Wild Encounter Check (Study Lab)
+                    checkEncounter(easymde.value(), 'lab');
                 });
 
                 easymde.codemirror.on("paste", function(editor, e) {
@@ -163,13 +319,16 @@ custom_js = """
             }
         }, 1000); 
         
-        // --- READING ROOM LOOT COUNTER LOGIC ---
+        // --- READING ROOM LOOT & AMBUSH LOGIC ---
         document.addEventListener('input', function(e) {
             if (e.target && e.target.id === 'read_note_main') {
                 const content = e.target.value;
                 const counterEl = document.getElementById('loot-counter');
+                
+                // Wild Encounter Check (Reading Room)
+                checkEncounter(content, 'read');
+                
                 if (counterEl) {
-                    // Triggers the completionist reward loop by counting '?'
                     const count = (content.match(/[?]/g) || []).length;
                     const currentCount = parseInt(counterEl.getAttribute('data-count') || '0');
                     
@@ -203,22 +362,16 @@ custom_js = """
             const iframe = document.getElementById('pdf-viewer-iframe');
             if (iframe) {
                 try {
-                    // Use native fetch to rapidly convert base64 payload to memory blob
                     const res = await fetch(dataUri);
                     const blob = await res.blob();
-                    
-                    // Clear old blob to prevent memory leaks
-                    if (currentPdfUrl) {
-                        URL.revokeObjectURL(currentPdfUrl);
-                    }
-                    
+                    if (currentPdfUrl) { URL.revokeObjectURL(currentPdfUrl); }
                     currentPdfUrl = URL.createObjectURL(blob);
                     iframe.src = currentPdfUrl;
                 } catch (e) {
                     console.error("Failed to load PDF blob:", e);
                 }
             }
-        }, 300); // 300ms delay ensures the UI has fully generated the iframe DOM element
+        }, 300); 
     });
 
     document.addEventListener('paste', function(e) {
@@ -243,6 +396,8 @@ custom_js = """
     });
 
     Shiny.addCustomMessageHandler('update_editor', function(markdown) {
+        window.isFirstLoadLab = true; 
+        window.initialConceptsLab.clear();
         if (window.easymde_editor) { window.easymde_editor.value(markdown); }
         Shiny.setInputValue('map_content_for_map', markdown, {priority: 'event'});
     });
@@ -341,6 +496,58 @@ def load_node_mastery():
         except: pass
     return pd.DataFrame(columns=["Module", "Map", "Node_Raw", "Attempts", "Correct"])
 
+def load_user_stats():
+    """Loads gamification profile (XP, Daily Login Streak, Quests)"""
+    stats = {"Total_XP": 0, "Daily_Streak": 0, "Last_Active": "", "Completed_Quests": "", "Quest_Date": ""}
+    if os.path.exists(STATS_LOG):
+        try:
+            df = pd.read_csv(STATS_LOG)
+            if len(df) > 0: 
+                row = df.iloc[0].to_dict()
+                for k, v in row.items():
+                    if pd.notna(v): stats[k] = v
+        except: pass
+    return stats
+
+def save_user_stats(stats_dict):
+    pd.DataFrame([stats_dict]).to_csv(STATS_LOG, index=False)
+
+def get_node_health():
+    """Calculates forgetting curve decay across all mastered nodes"""
+    df = load_node_mastery()
+    if df.empty: return {"fading": 0, "forgotten": 0, "healthy": 0}
+    
+    rev_df = load_revisions()
+    today = datetime.now().date()
+    health = {"fading": 0, "forgotten": 0, "healthy": 0}
+    
+    for _, row in df.iterrows():
+        score = row['Correct'] / max(row['Attempts'], 1)
+        if score >= 0.8: # Only track decay for things you previously mastered
+            map_revs = rev_df[rev_df['Map'] == row['Map']]
+            if map_revs.empty:
+                days_since = 999
+            else:
+                try:
+                    map_revs['Date_Obj'] = pd.to_datetime(map_revs['Date'], errors='coerce')
+                    last_date = map_revs['Date_Obj'].max().date()
+                    days_since = (today - last_date).days
+                except:
+                    days_since = 0
+            
+            if days_since >= 14:   health["forgotten"] += 1
+            elif days_since >= 7:  health["fading"] += 1
+            else:                  health["healthy"] += 1
+            
+    return health
+
+def get_survival_peak():
+    """Calculates 75th percentile of session durations to find the 'Danger Zone'."""
+    df = load_revisions()
+    if df.empty or len(df) < 3:
+        return 20.0 # Default 20 mins if not enough data
+    return float(df['Duration (min)'].quantile(0.75))
+
 def normalize_text(t):
     """Bulletproof string normalizer to fix invisible Markdown/PDF characters"""
     if pd.isna(t): return ""
@@ -405,7 +612,7 @@ def inject_mastery_colors(module, map_name, raw_md):
 
             if header_match:
                 prefix, content = header_match.groups()
-                clean_content = content.strip() # BUG FIX: Strip invisible trailing \r that breaks HTML tags
+                clean_content = content.strip() 
                 raw_text = normalize_text(clean_content)
                 score = score_dict.get(raw_text, -1)
 
@@ -444,8 +651,14 @@ def protect_math(raw_text):
 # --- UI ---
 app_ui = ui.page_navbar(
     ui.head_content(ui.HTML(custom_js)), 
-
+    
     ui.nav_panel("Analytics Dashboard",
+        ui.layout_columns(
+            ui.output_ui("scholar_profile_ui"),
+            ui.output_ui("quest_board_ui"),
+            col_widths=(6, 6)
+        ),
+        ui.br(),
         ui.layout_columns(
             ui.div(ui.output_ui("kpi_encoding_ui"), class_="kpi-card"),
             ui.div(ui.output_ui("kpi_retrieval_ui"), class_="kpi-card"),
@@ -572,19 +785,21 @@ app_ui = ui.page_navbar(
         )
     ),
     
-    title="OptiSystem v6.40",
+    title="OptiSystem v6.46",
+    header=ui.output_ui("gamification_hud") 
 )
 
 # --- SERVER ---
 def server(input, output, session):
     refresh_trigger = reactive.Value(0)
+    user_stats_reactive = reactive.Value(load_user_stats())
     
     read_state = reactive.Value({"mode": None, "data": None})
     sl_active = reactive.Value(False)
     sl_start_time = reactive.Value(0.0)
 
     # Revision Hub Session States (Locked to prevent UI jump bugs)
-    rev_phase = reactive.Value("setup") 
+    rev_phase = reactive.Value("setup") # setup, easy, transition, hard, summary
     rev_slides = reactive.Value([])
     rev_current_idx = reactive.Value(0)
     rev_start_time = reactive.Value(0.0)
@@ -593,6 +808,8 @@ def server(input, output, session):
     rev_show_ans = reactive.Value(False)
     rev_active_mod = reactive.Value("") 
     rev_active_map = reactive.Value("") 
+    rev_session_correct = reactive.Value(0)
+    rev_session_incorrect = reactive.Value(0)
     
     # Blurt Studio Session States
     blurt_state = reactive.Value("setup") 
@@ -601,6 +818,259 @@ def server(input, output, session):
     blurt_start_time = reactive.Value(0.0)
     blurt_active_mod = reactive.Value("")
     blurt_active_map = reactive.Value("")
+    
+    # Wild Encounter Session State
+    wild_encounter_state = reactive.Value(None)
+
+    # ==========================
+    # SURVIVAL MODEL INIT
+    # ==========================
+    @reactive.Effect
+    async def push_survival_data():
+        refresh_trigger() # Update whenever a new session is logged
+        peak = get_survival_peak()
+        await session.send_custom_message("init_survival_model", peak)
+
+    # ==========================
+    # GAMIFICATION ENGINE (XP, STREAKS, QUESTS, ENCOUNTERS)
+    # ==========================
+    def grant_xp(amount):
+        """Grants XP, calculates levels, and perfectly maintains the daily login streak"""
+        stats = user_stats_reactive()
+        today = datetime.now().date()
+        last_active = stats.get("Last_Active", "")
+        
+        # Determine Daily Login Streak
+        current_streak = stats.get("Daily_Streak", 0)
+        if last_active:
+            last_date = datetime.strptime(last_active, "%Y-%m-%d").date()
+            delta = (today - last_date).days
+            if delta == 1:
+                current_streak += 1  # Streak preserved and increased!
+            elif delta > 1:
+                current_streak = 1   # Missed a day, streak broken and reset
+        else:
+            current_streak = 1       # First time using the system
+            
+        old_xp = int(stats.get("Total_XP", 0))
+        new_xp = old_xp + amount
+        
+        # Leveling Curve Algorithm (Level 1 starts at 0 XP, gets exponentially harder)
+        old_level = int((old_xp / 100) ** 0.5) + 1
+        new_level = int((new_xp / 100) ** 0.5) + 1
+        
+        # Update State & DB
+        stats["Total_XP"] = new_xp
+        stats["Daily_Streak"] = current_streak
+        stats["Last_Active"] = str(today)
+        
+        save_user_stats(stats)
+        user_stats_reactive.set(stats)
+        
+        if new_level > old_level:
+            ui.notification_show(f"🎉 LEVEL UP! You are now a Level {new_level} Scholar!", type="message", duration=5)
+            
+        return new_xp, current_streak
+        
+    def check_quest_completion(activity, duration=0.0, accuracy=0.0, cards=0):
+        """Evaluates ongoing activity against the 3 daily quests"""
+        stats = user_stats_reactive()
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        
+        # Reset quests if it's a new day
+        if stats.get("Quest_Date") != today_str:
+            stats["Completed_Quests"] = ""
+            stats["Quest_Date"] = today_str
+            
+        completed_ids = stats.get("Completed_Quests", "").split(",") if stats.get("Completed_Quests") else []
+        daily_quests = get_daily_quests()
+        
+        newly_completed = False
+        for q in daily_quests:
+            if q['id'] not in completed_ids:
+                is_done = False
+                if q['type'] == 'activity' and activity == q['activity']: is_done = True
+                elif q['type'] == 'duration' and (activity == q['activity'] or q['activity'] == 'any') and duration >= q['target']: is_done = True
+                elif q['type'] == 'accuracy' and activity == q['activity'] and accuracy >= q['target']: is_done = True
+                elif q['type'] == 'cards' and activity == q['activity'] and cards >= q['target']: is_done = True
+                
+                if is_done:
+                    completed_ids.append(q['id'])
+                    grant_xp(q['xp'])
+                    ui.notification_show(f"📋 QUEST COMPLETE: {q['desc']}! +{q['xp']} XP 🌟", type="message", duration=6)
+                    newly_completed = True
+        
+        if newly_completed:
+            stats["Completed_Quests"] = ",".join(completed_ids)
+            save_user_stats(stats)
+            user_stats_reactive.set(stats)
+
+    @output
+    @render.ui
+    def gamification_hud():
+        stats = user_stats_reactive()
+        xp = int(stats.get("Total_XP", 0))
+        streak = int(stats.get("Daily_Streak", 0))
+        level = int((xp / 100) ** 0.5) + 1
+        fatigue_peak = get_survival_peak()
+        
+        return ui.div(
+            ui.div(f"⏱️ Drop-out Peak: {fatigue_peak:.1f}m", class_="hud-item text-muted", style="font-size: 0.85em; border-right: 1px solid #dee2e6; padding-right: 10px;"),
+            ui.div(f"🔥 {streak} Day Streak", class_="hud-item hud-streak"),
+            ui.div(
+                ui.span(f"🌟 Lvl {level}", class_="hud-level"),
+                ui.span(f"{xp} XP", class_="hud-xp"),
+                class_="hud-item"
+            ),
+            class_="gamification-hud"
+        )
+        
+    # --- WILD ENCOUNTER LOGIC ---
+    @reactive.Effect
+    @reactive.event(input.wild_encounter)
+    def trigger_ambush():
+        encounter = input.wild_encounter() # Returns a dict: {question: ..., answer: ...}
+        wild_encounter_state.set(encounter)
+        m = ui.modal(
+            ui.div(
+                ui.h2("👾 WILD ENCOUNTER!", style="color: #dc3545; font-weight: 900; text-align: center; letter-spacing: 2px; margin-bottom: 5px;"),
+                ui.p("A concept you just drafted attacks! Defend yourself.", class_="text-muted text-center"),
+                ui.hr(style="border-color: #dc3545; opacity: 0.2;"),
+                ui.div(
+                    ui.h4(encounter['question'], style="text-align: center; margin: 25px 0; font-weight: bold; color: #212529;")
+                ),
+                ui.input_text_area("ambush_answer", label=None, placeholder="Type your defense here...", width="100%", height="120px"),
+                ui.div(
+                    ui.input_action_button("flee_ambush", "🏃 Run Away", class_="btn-outline-secondary"),
+                    ui.input_action_button("attack_ambush", "⚔️ Attack! (Reveal)", class_="btn-danger", style="float: right; font-weight: bold;"),
+                    style="margin-top: 20px;"
+                ),
+                style="animation: popInRPG 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);"
+            ),
+            title=None,
+            size="l",
+            easy_close=False,
+            footer=None
+        )
+        ui.modal_show(m)
+        ui.update_text_area("ambush_answer", value="")
+
+    @reactive.Effect
+    @reactive.event(input.attack_ambush)
+    async def reveal_ambush():
+        encounter = wild_encounter_state()
+        ui.modal_remove()
+        
+        ans_html = protect_math(encounter['answer']) if encounter['answer'] else "_No specific bullet points logged yet._"
+        
+        m = ui.modal(
+            ui.div(
+                ui.h2("💥 BATTLE RESULTS", style="color: #6f42c1; font-weight: 900; text-align: center;"),
+                ui.hr(),
+                ui.h5("Your Defense:", class_="text-muted"),
+                ui.p(input.ambush_answer() if input.ambush_answer() else "_Blank_"),
+                ui.hr(),
+                ui.h5("True Notes:", class_="text-muted"),
+                ui.markdown(ans_html),
+                ui.hr(),
+                ui.div(
+                    ui.input_action_button("ambush_fail", "❌ Missed it", class_="btn-outline-danger"),
+                    ui.input_action_button("ambush_success", "✅ Nailed it! (+35 XP)", class_="btn-success", style="float: right; font-weight: bold;"),
+                    style="margin-top: 20px;"
+                )
+            ),
+            title=None, size="l", easy_close=False, footer=None
+        )
+        ui.modal_show(m)
+        await session.send_custom_message("render_katex", None)
+
+    @reactive.Effect
+    @reactive.event(input.ambush_success)
+    def ambush_win():
+        ui.modal_remove()
+        grant_xp(35)
+        ui.notification_show("⚔️ Critical Hit! Concept defeated. +35 XP", type="message")
+
+    @reactive.Effect
+    @reactive.event(input.ambush_fail)
+    def ambush_loss():
+        ui.modal_remove()
+        ui.notification_show("The concept got the better of you. Keep studying!", type="warning")
+
+    @reactive.Effect
+    @reactive.event(input.flee_ambush)
+    def flee():
+        ui.modal_remove()
+        ui.notification_show("You fled the battle... no XP gained.", type="warning")
+
+    @output
+    @render.ui
+    def scholar_profile_ui():
+        stats = user_stats_reactive()
+        xp = int(stats.get("Total_XP", 0))
+        streak = int(stats.get("Daily_Streak", 0))
+        level = int((xp / 100) ** 0.5) + 1
+        
+        # Calculate progress bar percentages
+        current_level_base_xp = (level - 1) ** 2 * 100
+        next_level_base_xp = (level) ** 2 * 100
+        xp_needed = next_level_base_xp - current_level_base_xp
+        xp_gained_this_level = xp - current_level_base_xp
+        progress_pct = int((xp_gained_this_level / xp_needed) * 100) if xp_needed > 0 else 0
+        
+        # DOPAMINE HOOK: Forgetting Curve Urgency
+        health = get_node_health()
+        
+        return ui.card(
+            ui.div(
+                ui.h2(f"Level {level} Scholar", style="color: #6f42c1; font-weight: 800; margin-bottom: 5px;"),
+                ui.p(f"🔥 {streak} Day Active Learning Streak", style="color: #ff8c00; font-size: 1.1em; font-weight: 600; margin-bottom: 15px;"),
+                ui.div(
+                    ui.div(class_="progress-bar bg-success", style=f"width: {progress_pct}%"), 
+                    class_="progress", style="height: 12px; border-radius: 10px; margin-bottom: 8px;"
+                ),
+                ui.p(f"{xp_gained_this_level} / {xp_needed} XP to Level {level + 1}", style="font-size: 0.85em; color: gray; text-align: right; margin: 0;"),
+                
+                # Retention Hook (Decaying Knowledge)
+                ui.div(
+                    ui.p(f"🔴 {health['forgotten']} Forgotten | 🟡 {health['fading']} Fading | 🟢 {health['healthy']} Healthy", 
+                         style="font-size: 0.9em; font-weight: bold; margin-top: 15px; margin-bottom: 0; background: #fff; padding: 6px 12px; border-radius: 8px; border: 1px solid #dee2e6; display: inline-block;")
+                )
+            ),
+            style="border-left: 5px solid #6f42c1; background: #faf8fc;"
+        )
+
+    @output
+    @render.ui
+    def quest_board_ui():
+        stats = user_stats_reactive()
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        
+        # Load completed list if it matches today's date
+        completed = stats.get("Completed_Quests", "").split(",") if stats.get("Quest_Date") == today_str and stats.get("Completed_Quests") else []
+        
+        quests = get_daily_quests()
+        quest_html = []
+        for q in quests:
+            is_done = q['id'] in completed
+            icon = "✅" if is_done else "⬜"
+            color = "text-success text-decoration-line-through" if is_done else "text-dark"
+            quest_html.append(
+                ui.div(
+                    ui.span(icon, class_="me-2"),
+                    ui.span(q['desc'], class_=color, style="font-weight: 500;"),
+                    ui.span(f"+{q['xp']} XP", class_="badge bg-success" if is_done else "badge bg-secondary", style="float: right;"),
+                    class_="mb-2 p-2 border rounded shadow-sm bg-white"
+                )
+            )
+            
+        return ui.card(
+            ui.card_header(ui.tags.b("📋 Daily Quests")),
+            ui.p("Complete these before midnight to earn massive XP bonuses!", class_="text-muted", style="font-size: 0.85em;"),
+            ui.div(*quest_html),
+            style="background: #f8f9fa;"
+        )
+
 
     # ==========================
     # DASHBOARD LOGIC 
@@ -919,8 +1389,12 @@ def server(input, output, session):
         with open(os.path.join(BASE_PATH, input.read_mod(), filename), "w") as f:
             f.write("".join(final_content))
             
+        # Dopamine Hook: Harvesting Notes grants XP
+        grant_xp(50)
+        check_quest_completion("Reading")
+            
         refresh_trigger.set(refresh_trigger() + 1)
-        ui.notification_show(f"Successfully exported {filename} to {input.read_mod()}! Go to Study Lab to view it.", type="message")
+        ui.notification_show(f"Successfully exported {filename}! +50 XP 🌟", type="message")
 
     # ==========================
     # STUDY LAB LOGIC
@@ -941,8 +1415,13 @@ def server(input, output, session):
         new_row = pd.DataFrame({"Module": [input.map_mod()], "Map": [input.save_name() if input.save_name() else "Drafting"], "Date": [datetime.now().strftime("%Y-%m-%d %H:%M")], "Duration (min)": [duration], "Activity": ["Study Lab"]})
         pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
         sl_active.set(False)
+        
+        # Dopamine Hook: Map Encoding Completion
+        grant_xp(50)
+        check_quest_completion("Study Lab", duration=duration)
+        
         refresh_trigger.set(refresh_trigger() + 1)
-        ui.notification_show(f"Logged {duration} minutes.", type="message")
+        ui.notification_show(f"Logged {duration} minutes. +50 XP 🌟", type="message")
 
     @reactive.Effect
     @reactive.event(input.save_btn)
@@ -1129,6 +1608,8 @@ def server(input, output, session):
         rev_slides.set(slides)
         rev_current_idx.set(0)
         rev_streak.set(0)
+        rev_session_correct.set(0)
+        rev_session_incorrect.set(0)
         rev_mcq_options.set(generate_mcq_opts(0, slides))
         rev_start_time.set(time.time())
         rev_phase.set("easy") # Start in the low-friction warm-up phase
@@ -1146,13 +1627,14 @@ def server(input, output, session):
         
         is_correct = (ans == correct)
         
-        # Dopamine Hook: Streaks
+        # DOPAMINE HOOK: Primer Streaks build XP multipliers!
         if is_correct:
             rev_streak.set(rev_streak() + 1)
-            ui.notification_show("Correct! +1 Streak 🔥" if rev_streak() >=3 else "Correct!", type="message", duration=2)
+            grant_xp(5) # Small micro-reward to reinforce the click
+            ui.notification_show("Correct! +5 XP (+1 Combo) 🔥" if rev_streak() >=3 else "Correct! +5 XP", type="message", duration=2)
         else:
             rev_streak.set(0)
-            ui.notification_show("Incorrect, but keep going!", type="warning", duration=2)
+            ui.notification_show("Incorrect, combo lost!", type="warning", duration=2)
             
         # Auto-advance
         if idx < len(slides) - 1:
@@ -1179,20 +1661,35 @@ def server(input, output, session):
         direction = input.hard_answer() # left or right
         slides, idx = rev_slides(), rev_current_idx()
         
-        # --- MASTERY TRACKING ---
         node_question = slides[idx]["breadcrumb"]
         is_correct = (direction == 'right')
         
-        # Track directly to the locked session state to prevent UI jump bugs!
-        update_node_mastery(rev_active_mod(), rev_active_map(), node_question, is_correct)
+        # --- DOPAMINE HOOK: THE COMBO MULTIPLIER ---
+        if is_correct:
+            current_combo = rev_streak()
+            multiplier = min(current_combo + 1, 5) # Caps at a massive 5x XP boost
+            xp_gain = 15 * multiplier
+            grant_xp(xp_gain)
+            
+            rev_session_correct.set(rev_session_correct() + 1)
+            rev_streak.set(current_combo + 1)
+            update_node_mastery(rev_active_mod(), rev_active_map(), node_question, True)
+            
+            ui.notification_show(f"Epic Recall! +{xp_gain} XP (x{multiplier} Combo!) 🚀", type="message", duration=2)
+        else:
+            rev_streak.set(0)
+            rev_session_incorrect.set(rev_session_incorrect() + 1)
+            update_node_mastery(rev_active_mod(), rev_active_map(), node_question, False)
+            
+            ui.notification_show("Combo broken. Keep going!", type="warning", duration=2)
+        
         refresh_trigger.set(refresh_trigger() + 1)
-        # ------------------------
         
         if idx < len(slides) - 1:
             rev_current_idx.set(idx + 1)
             rev_show_ans.set(False)
         else:
-            # Complete Revision Session
+            # Complete Revision Session and move to Summary Screen
             duration = round((time.time() - rev_start_time()) / 60, 2)
             df = load_revisions()
             new_row = pd.DataFrame({
@@ -1203,9 +1700,20 @@ def server(input, output, session):
                 "Activity": ["Revision"]
             })
             pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
-            rev_phase.set("setup")
+            
+            # Check for Quests
+            total_cards = len(slides)
+            acc = rev_session_correct() / max(total_cards, 1)
+            check_quest_completion("Revision", duration=duration, accuracy=acc, cards=total_cards)
+            
+            rev_phase.set("summary")
             refresh_trigger.set(refresh_trigger() + 1)
-            ui.notification_show(f"Session Complete! Logged {duration} mins.", type="message")
+            
+    @reactive.Effect
+    @reactive.event(input.return_setup_btn)
+    def _return_setup():
+        rev_phase.set("setup")
+        rev_slides.set([])
 
     @output
     @render.ui
@@ -1252,9 +1760,11 @@ def server(input, output, session):
             
         elif phase == "hard":
             display_raw = protect_math(slides[idx]["raw"])
+            streak_badge = f'<span class="badge bg-warning text-dark" style="font-size: 1.1em; float:right;">🔥 Combo: {min(streak+1, 5)}x</span>' if streak > 0 else ""
             
             if not rev_show_ans():
                 return ui.div(
+                    ui.HTML(streak_badge),
                     ui.p("ACTIVE RECALL", class_="text-muted", style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px;"),
                     ui.hr(),
                     ui.div(ui.h3(slides[idx]["breadcrumb"], class_="text-center"), class_="flashcard-box"),
@@ -1265,6 +1775,7 @@ def server(input, output, session):
                 )
             else:
                 return ui.div(
+                    ui.HTML(streak_badge),
                     ui.p(slides[idx]["breadcrumb"], class_="text-muted", style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px;"),
                     ui.hr(style="margin-top: 5px;"),
                     ui.div(ui.markdown(display_raw), class_="slide-content flashcard-box", style="font-size: 1.6em; text-align: center;"),
@@ -1276,6 +1787,43 @@ def server(input, output, session):
                     ),
                     class_="card p-4 shadow-sm slide-container"
                 )
+                
+        elif phase == "summary":
+            correct = rev_session_correct()
+            incorrect = rev_session_incorrect()
+            total = correct + incorrect
+            acc = int((correct / total * 100)) if total > 0 else 0
+            duration = round((time.time() - rev_start_time()) / 60, 2)
+
+            acc_color = "#198754" if acc >= 80 else "#fd7e14" if acc >= 50 else "#dc3545"
+            msg = "Outstanding Mastery! 🏆" if acc >= 80 else "Solid Effort! Keep building momentum. 📈" if acc >= 50 else "Great practice. Repetition is key! 💪"
+
+            return ui.div(
+                ui.h2("🎉 Session Complete!"),
+                ui.p(msg, class_="text-muted mb-4", style="font-size: 1.1em;"),
+                ui.layout_columns(
+                    ui.div(
+                        ui.h1(f"{acc}%", style=f"color: {acc_color}; font-weight: 900; margin: 0; font-size: 2.5em;"),
+                        ui.p("Accuracy", class_="text-muted", style="text-transform: uppercase; font-size: 0.8em; letter-spacing: 1px; margin-top: 5px;"),
+                        class_="p-3 text-center", style="background: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef;"
+                    ),
+                    ui.div(
+                        ui.h1(f"{correct}", style="color: #198754; font-weight: 900; margin: 0; font-size: 2.5em;"),
+                        ui.p("Mastered", class_="text-muted", style="text-transform: uppercase; font-size: 0.8em; letter-spacing: 1px; margin-top: 5px;"),
+                        class_="p-3 text-center", style="background: #e8f5e9; border-radius: 8px; border: 1px solid #c3e6cb;"
+                    ),
+                    ui.div(
+                        ui.h1(f"{incorrect}", style="color: #dc3545; font-weight: 900; margin: 0; font-size: 2.5em;"),
+                        ui.p("To Review", class_="text-muted", style="text-transform: uppercase; font-size: 0.8em; letter-spacing: 1px; margin-top: 5px;"),
+                        class_="p-3 text-center", style="background: #f8d7da; border-radius: 8px; border: 1px solid #f5c6cb;"
+                    ),
+                    col_widths=(4, 4, 4)
+                ),
+                ui.p(f"⏱️ Time logged: {duration} mins", class_="text-center mt-4 text-muted", style="font-size: 0.9em; font-weight: bold;"),
+                ui.hr(),
+                ui.input_action_button("return_setup_btn", "Finish & Return to Hub", class_="btn-primary btn-lg w-100"),
+                class_="card p-4 shadow-sm slide-container", style="display: flex; flex-direction: column; justify-content: center; min-height: 350px;"
+            )
 
     @output
     @render.table
@@ -1344,6 +1892,13 @@ def server(input, output, session):
                 "Activity": ["Blurt"]
             })
             pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
+            
+            # Dopamine Hook: Massive XP for Blurting & Check Quests
+            grant_xp(100)
+            check_quest_completion("Blurt", duration=duration)
+            
+            ui.notification_show("Massive Cognitive Effort! +100 XP 🧠🌟", type="message")
+            
             refresh_trigger.set(refresh_trigger() + 1)
 
     @reactive.Effect
