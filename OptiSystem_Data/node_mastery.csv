@@ -11,3 +11,15 @@ BWIN817,L16_seminar_5.md,How is a discrete-time hazard defined?,1,1
 BWIN817,L16_seminar_5.md,What is the difference between left censoring and left truncation?,1,1
 BWIN817,L16_seminar_5.md,What is right censoring?,1,1
 BWIN817,L16_seminar_5.md,What is the difference between static and dynamic variables?,1,1
+BWIN817,L17_seminar_5.md,What are some issues ?,1,1
+BWIN817,L17_seminar_5.md,How can we handle large numbers of observations?,1,0
+BWIN817,L17_seminar_5.md,How can we handle unequal intervals?,1,1
+BWIN817,L17_seminar_5.md,How can we handle empty intervals?,1,1
+BWIN817,L17_seminar_5.md,How can we handle left truncations?,1,1
+BWIN817,L17_seminar_5.md,How can we handle competing risks?,1,1
+BWIN817,L17_seminar_5.md,How do we do model validation for time-dependent outcomes?,1,1
+BWIN817,L17_seminar_5.md,how do we measure ranking and accuracy for time dependent outcomes?,1,1
+BWIN817,L17_seminar_5.md,How do we handle multiple defaults?,1,1
+BWIN817,L17_seminar_5.md,what is the difference between the LR used in scorecards and this LR used in discrete hazard?,1,1
+BWIN817,L17_seminar_5.md,"How do we forecast application, behavioral and macroeconomic variables?",1,1
+BWIN817,L17_seminar_5.md,what are the benefits of using discrete hazard rates for IFRS 9 PD modelling?,1,1

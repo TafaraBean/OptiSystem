@@ -41,21 +41,21 @@ Accuracy (calibration) is measured through a time-dependent brier score
 for future time periods** given the individual has not defaulted.
 
 # How do we forecast application, behavioral and macroeconomic variables?
-- **application variables**: don't pose a significant challenge. they are **stable over short horizons**
-**macroeconomic variables**: forecasts can be sourced from **internal economic forecasts** or **external macroeconomic forecasts**
-**behavioural variables**: forecasted using a **naive method** or using **simple time-based models**
+- application variables: don't pose a significant challenge. they are stable over short horizons
+macroeconomic variables: forecasts can be sourced from internal economic forecasts or external macroeconomic forecasts
+behavioural variables: forecasted using a naive method or using simple time-based models
 ![img_1777339587478.png](/files/BWIB817/img_1777339587478.png)
 
 
 # what are the benefits of using discrete hazard rates for IFRS 9 PD modelling?
-- Enables the use of **logistic regression**, a well-established and **widely understood** technique within
+- Enables the use of logistic regression, a well-established and widely understood technique within
 banks. 
-- Facilitates direct **inclusion** of standard predictor categories, such as **application variables**, **behavioural variables**, and **macroeconomic variables**.
-- **Eliminates** the need for separate macroeconomic **scenario modelling** (e.g. scalars), as discrete-time
-hazard models can **accommodate** both **time-static and time-varying covariates**, including
+- Facilitates direct inclusion of standard predictor categories, such as application variables, behavioural variables, and macroeconomic variables.
+- Eliminates the need for separate macroeconomic scenario modelling (e.g. scalars), as discrete-time
+hazard models can accommodate both time-static and time-varying covariates, including
 macroeconomic indicators.
-- Offers practical advantages over continuous-time models, particularly in handling **right-censoring**
-and **tied event times**, which are common in real-world credit datasets.
+- Offers practical advantages over continuous-time models, particularly in handling right-censoring
+and tied event times, which are common in real-world credit datasets.
 
 
 

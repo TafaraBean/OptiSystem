@@ -62,6 +62,10 @@ custom_js = """
     #mindmap strong, #mindmap b { font-weight: 900 !important; font-style: normal !important; color: #000 !important; }
     #mindmap foreignObject div { white-space: nowrap !important; }
     
+    /* Hide raw textarea under EasyMDE */
+    #map_content { display: none !important; }
+    #read_note_main { display: none !important; }
+    
     .slide-content { width: 100%; max-width: 100%; overflow-x: auto; box-sizing: border-box; word-wrap: break-word; overflow-wrap: break-word; }
     .slide-content > * { max-width: 100%; }
     .slide-content img { margin: 0 auto; }
@@ -116,28 +120,245 @@ custom_js = """
         0% { transform: scale(0.8); opacity: 0; }
         100% { transform: scale(1); opacity: 1; }
     }
+    
+    /* Focus Depletion Bar */
+    #focus-bar-track {
+        position: fixed; top: 0; left: 0; width: 100%; height: 7px;
+        background: rgba(0,0,0,0.08); z-index: 10002; pointer-events: none;
+    }
+    #focus-bar-fill {
+        height: 100%; width: 100%;
+        background: #2d9e6b;
+        transition: width 0.9s linear, background-color 0.7s ease;
+        border-radius: 0 0 4px 0;
+    }
+    @keyframes pulseBar {
+        0%   { opacity: 1; }
+        50%  { opacity: 0.45; }
+        100% { opacity: 1; }
+    }
+    .bar-critical { animation: pulseBar 0.8s ease-in-out infinite; }
 </style>
 
 <script>
+    // --- KEYBOARD SHORTCUTS FOR FLASHCARDS ---
+    document.addEventListener('keydown', function(e) {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+            return;
+        }
+        if (e.code === 'Space') {
+            const revealBtn = document.getElementById('reveal_ans_btn');
+            if (revealBtn) { e.preventDefault(); revealBtn.click(); }
+        } else if (e.code === 'ArrowLeft') {
+            const failBtn = document.getElementById('btn_hard_left');
+            if (failBtn) { e.preventDefault(); failBtn.click(); }
+        } else if (e.code === 'ArrowRight') {
+            const passBtn = document.getElementById('btn_hard_right');
+            if (passBtn) { e.preventDefault(); passBtn.click(); }
+        }
+    });
+
+    // ============================================================
+    // SESSION TIMER & IDLE ANCHOR SYSTEM
+    // ============================================================
+    window.sessionLoginTime = Date.now();
+    window.lastActivityTime  = Date.now();
+    window.idleWarningActive = false;
+    const IDLE_THRESHOLD_MS  = 3 * 60 * 1000; // 3 minutes
+
+    // Safely inject focus bar and idle overlay into DOM after it parses
+    document.addEventListener("DOMContentLoaded", function() {
+        const track = document.createElement('div');
+        track.id = 'focus-bar-track';
+        track.innerHTML = '<div id="focus-bar-fill"></div>';
+        document.body.appendChild(track);
+
+        const overlay = document.createElement('div');
+        overlay.id = 'idle-overlay';
+        overlay.innerHTML = `
+            <div style="
+                background: white;
+                padding: 45px 40px;
+                border-radius: 16px;
+                text-align: center;
+                max-width: 500px;
+                width: 90%;
+                box-shadow: 0 25px 70px rgba(0,0,0,0.55);
+                animation: popInRPG 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+                border-top: 6px solid #dc3545;
+            ">
+                <div style="font-size:3.5em; margin-bottom:12px; line-height:1;">🧭</div>
+                <h2 style="color:#dc3545; font-weight:900; margin-bottom:8px; font-size:1.9em; letter-spacing:-0.5px;">You're Drifting.</h2>
+                <p style="color:#6c757d; font-size:1.05em; margin-bottom:8px; line-height:1.6;">
+                    3 minutes passed with no activity detected.<br>
+                    Your future self needs you focused — right now.
+                </p>
+                <div id="idle-elapsed-display" style="
+                    font-size: 2.4em;
+                    font-weight: 900;
+                    color: #dc3545;
+                    margin: 18px 0;
+                    letter-spacing: 2px;
+                    font-variant-numeric: tabular-nums;
+                ">00:00</div>
+                <p style="color:#adb5bd; font-size: 0.85em; margin-bottom: 25px;">time you've been away</p>
+                <button
+                    id="dismiss-idle-btn"
+                    style="
+                        background: #dc3545;
+                        color: white;
+                        border: none;
+                        padding: 15px 40px;
+                        border-radius: 10px;
+                        font-size: 1.15em;
+                        font-weight: 800;
+                        cursor: pointer;
+                        width: 100%;
+                        letter-spacing: 0.5px;
+                        transition: transform 0.1s, filter 0.2s;
+                    "
+                    onmouseover="this.style.filter='brightness(1.15)'"
+                    onmouseout="this.style.filter='brightness(1)'"
+                    onmousedown="this.style.transform='scale(0.97)'"
+                    onmouseup="this.style.transform='scale(1)'"
+                    onclick="dismissIdle()"
+                >
+                    I'm Back — Resume Focus 🔥
+                </button>
+            </div>`;
+        overlay.style.cssText = `
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            background: rgba(10, 10, 20, 0.82);
+            backdrop-filter: blur(4px);
+            z-index: 10000;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+        `;
+        document.body.appendChild(overlay);
+    });
+
+    function resetIdleTimer() {
+        window.lastActivityTime = Date.now();
+        if (window.idleWarningActive) { dismissIdle(); }
+    }
+
+    function dismissIdle() {
+        window.idleWarningActive  = false;
+        window.lastActivityTime   = Date.now();
+        const overlay = document.getElementById('idle-overlay');
+        if (overlay) overlay.style.display = 'none';
+        const fill = document.getElementById('focus-bar-fill');
+        if (fill) { fill.classList.remove('bar-critical'); fill.style.width = '100%'; fill.style.backgroundColor = '#2d9e6b'; }
+    }
+
+    function showIdleOverlay() {
+        if (window.idleWarningActive) return;
+        window.idleWarningActive = true;
+        const overlay = document.getElementById('idle-overlay');
+        if (overlay) overlay.style.display = 'flex';
+    }
+
+    function formatSessionTime(ms) {
+        const totalSecs = Math.floor(ms / 1000);
+        const hrs  = Math.floor(totalSecs / 3600);
+        const mins = Math.floor((totalSecs % 3600) / 60);
+        const secs = totalSecs % 60;
+        if (hrs > 0) return `${hrs}h ${String(mins).padStart(2,'0')}m`;
+        return `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
+    }
+
+    const BAR_STOPS = [
+        { threshold: 0.65, color: '#2d9e6b' },  // green  — 0–35% idle
+        { threshold: 0.40, color: '#84cc16' },  // lime   — 35–60% idle
+        { threshold: 0.18, color: '#f59e0b' },  // amber  — 60–82% idle
+        { threshold: 0.00, color: '#ef4444' },  // red    — 82–100% idle
+    ];
+
+    function getBarColor(pct) {
+        for (const stop of BAR_STOPS) {
+            if (pct >= stop.threshold) return stop.color;
+        }
+        return '#b91c1c'; // fully drained
+    }
+
+    // Master heartbeat: updates timer display + checks idle every second
+    setInterval(function() {
+        const now    = Date.now();
+        const idleMs = now - window.lastActivityTime;
+        const pct    = Math.max(0, 1 - idleMs / IDLE_THRESHOLD_MS);
+
+        // 1. Drive the focus depletion bar
+        const fill = document.getElementById('focus-bar-fill');
+        if (fill) {
+            fill.style.width = (pct * 100).toFixed(1) + '%';
+            fill.style.backgroundColor = getBarColor(pct);
+            if (pct < 0.18 && pct > 0) {
+                fill.classList.add('bar-critical');
+            } else {
+                fill.classList.remove('bar-critical');
+            }
+        }
+
+        // 2. Session timer in HUD
+        const timerEl = document.getElementById('session-timer-display');
+        if (timerEl) timerEl.textContent = formatSessionTime(now - window.sessionLoginTime);
+
+        // 3. Idle elapsed counter inside the overlay
+        if (window.idleWarningActive) {
+            const idleEl = document.getElementById('idle-elapsed-display');
+            if (idleEl) idleEl.textContent = formatSessionTime(idleMs);
+        }
+
+        // 4. Trigger overlay at full depletion
+        if (pct === 0) { showIdleOverlay(); }
+
+    }, 1000);
+
+    // --- ACTIVITY HOOKS: reset idle on any relevant user interaction ---
+    document.addEventListener('keydown', function(e) {
+        if (e.target.tagName === 'TEXTAREA' || (e.target.closest && e.target.closest('.CodeMirror'))) { resetIdleTimer(); }
+    }, true);
+
+    document.addEventListener('click', function(e) {
+        const t = e.target;
+        if (!t) return;
+        if (
+            (t.classList && t.classList.contains('mcq-btn')) ||
+            t.id === 'reveal_ans_btn'           ||
+            t.id === 'btn_hard_left'            ||
+            t.id === 'btn_hard_right'           ||
+            t.id === 'attack_ambush'            ||
+            t.id === 'flee_ambush'              ||
+            t.id === 'start_hard_mode_btn'      ||
+            t.id === 'return_setup_btn'
+        ) { resetIdleTimer(); }
+    }, true);
+
     // --- RPG WILD ENCOUNTER & SURVIVAL ENGINE ---
     window.keysSinceLastEncounter = 0;
-    window.hazardPeak = 20.0; // Default 20 minutes
+    window.baseHazardPeak = 20.0; 
+    window.currentHazardPeak = 20.0; 
+    window.sessionStartTime = Date.now();
     window.lastEncounterTime = Date.now();
-    
+    window.overtimeEncounters = 0;
     window.initialConceptsLab = new Set();
     window.isFirstLoadLab = true;
-
     window.initialConceptsRead = new Set();
     window.isFirstLoadRead = true;
     
     Shiny.addCustomMessageHandler('init_survival_model', function(peak) {
         if (peak && peak > 5) { 
-            window.hazardPeak = peak; 
-            console.log("Survival Peak initialized:", peak, "minutes");
+            window.baseHazardPeak = peak; 
+            window.currentHazardPeak = peak;
         }
     });
     
     function extractConceptsWithAnswers(text) {
+        if (!text) return [];
         const lines = text.split('\\n');
         const concepts = [];
         let currentConcept = null;
@@ -165,7 +386,6 @@ custom_js = """
                 currentAnswer = [];
             } else {
                 if (currentConcept && trimmed && !trimmed.startsWith('```') && !trimmed.startsWith('$$')) {
-                    // Strip the bullets just for clean presentation in the reveal
                     currentAnswer.push(trimmed.replace(/^[-*+]\\s*/, '')); 
                 }
             }
@@ -185,20 +405,24 @@ custom_js = """
     }
     
     function checkEncounter(text, source) {
+        resetIdleTimer();
         window.keysSinceLastEncounter++;
-        if (window.keysSinceLastEncounter > 150) { // Require at least 150 keystrokes between battles
+        if (window.keysSinceLastEncounter > 150) { 
+            let totalSessionTime = (Date.now() - window.sessionStartTime) / 60000;
             let elapsedMinutes = (Date.now() - window.lastEncounterTime) / 60000;
             
-            // --- SURVIVAL HAZARD MODEL ---
-            // Base chance is 0.5%. As user approaches their historical quit time, chance spikes.
+            if (totalSessionTime >= window.baseHazardPeak) {
+                window.currentHazardPeak = Math.max(3.0, window.baseHazardPeak * Math.pow(0.5, window.overtimeEncounters));
+            } else {
+                window.currentHazardPeak = window.baseHazardPeak;
+            }
+
             let baseChance = 0.005;
-            let hazardRatio = Math.min(elapsedMinutes / window.hazardPeak, 2.5);
-            let dynamicChance = baseChance + (0.05 * Math.pow(hazardRatio, 2)); // Peaks around 10-15% in danger zone
+            let hazardRatio = Math.min(elapsedMinutes / window.currentHazardPeak, 2.5);
+            let dynamicChance = baseChance + (0.05 * Math.pow(hazardRatio, 2)); 
             
             if (Math.random() < dynamicChance) { 
                 const allConcepts = extractConceptsWithAnswers(text);
-                
-                // Filter out questions that were loaded when the file opened
                 let activeConcepts = [];
                 if (source === 'lab') {
                     if (window.isFirstLoadLab) {
@@ -214,16 +438,14 @@ custom_js = """
                     activeConcepts = allConcepts.filter(c => !window.initialConceptsRead.has(c.question));
                 }
 
-                // Only ambush with a random, FULLY DRAFTED concept from the current session's batch
                 const fullyDrafted = activeConcepts.filter(c => c.answer && c.answer.length > 0);
-
                 if (fullyDrafted.length > 0) { 
-                    const idx = Math.floor(Math.random() * fullyDrafted.length); // Pick a random completed question
+                    const idx = Math.floor(Math.random() * fullyDrafted.length);
                     battleFlash();
                     Shiny.setInputValue('wild_encounter', fullyDrafted[idx], {priority: 'event'});
-                    
-                    window.keysSinceLastEncounter = 0; // Reset Pedometer
-                    window.lastEncounterTime = Date.now(); // Dopamine refresh resets fatigue curve!
+                    window.keysSinceLastEncounter = 0; 
+                    window.lastEncounterTime = Date.now(); 
+                    if (totalSessionTime >= window.baseHazardPeak) { window.overtimeEncounters++; }
                 }
             }
         }
@@ -233,7 +455,9 @@ custom_js = """
         const { Transformer } = window.markmap;
         const transformer = new Transformer();
         const { root } = transformer.transform(markdown);
-        document.getElementById('mindmap').innerHTML = ''; 
+        const mmEl = document.getElementById('mindmap');
+        if (!mmEl) return;
+        mmEl.innerHTML = ''; 
         const mapOptions = { spacingHorizontal: 140, spacingVertical: 15 };
         const mm = markmap.Markmap.create('#mindmap', mapOptions, root);
         mm.fit(); 
@@ -241,12 +465,14 @@ custom_js = """
     
     function attachSyncScroll() {
         const leftPane = document.querySelector('.sync-scroll-left');
-        const rightPane = document.querySelector('.sync-scroll-right textarea');
+        let rightPane = document.querySelector('.sync-scroll-right .CodeMirror-scroll');
+        if (!rightPane) rightPane = document.querySelector('.sync-scroll-right textarea');
 
         if (!leftPane || !rightPane) return;
-        if (leftPane.dataset.syncAttached) return; 
+        if (leftPane.dataset.syncAttached === 'true' && rightPane.dataset.syncAttached === 'true') return; 
         
         leftPane.dataset.syncAttached = 'true';
+        rightPane.dataset.syncAttached = 'true';
 
         let isSyncingLeft = false;
         let isSyncingRight = false;
@@ -292,8 +518,6 @@ custom_js = """
                         Shiny.setInputValue('map_content', content); 
                         Shiny.setInputValue('map_content_for_map', content, {priority: 'event'});
                     }, 300); 
-                    
-                    // Wild Encounter Check (Study Lab)
                     checkEncounter(easymde.value(), 'lab');
                 });
 
@@ -319,34 +543,60 @@ custom_js = """
             }
         }, 1000); 
         
-        // --- READING ROOM LOOT & AMBUSH LOGIC ---
-        document.addEventListener('input', function(e) {
-            if (e.target && e.target.id === 'read_note_main') {
-                const content = e.target.value;
-                const counterEl = document.getElementById('loot-counter');
-                
-                // Wild Encounter Check (Reading Room)
-                checkEncounter(content, 'read');
-                
-                if (counterEl) {
-                    const count = (content.match(/[?]/g) || []).length;
-                    const currentCount = parseInt(counterEl.getAttribute('data-count') || '0');
-                    
-                    if (count !== currentCount) {
-                        counterEl.innerText = `Flashcards Captured: ${count} 💎`;
-                        counterEl.setAttribute('data-count', count);
-                        
-                        if (count > currentCount) {
-                            counterEl.classList.add('loot-pop');
-                            setTimeout(() => counterEl.classList.remove('loot-pop'), 300);
-                        }
-                    }
-                }
-            }
-        });
-        
+        // --- MUTATION OBSERVER FOR DYNAMIC UI ---
         const observer = new MutationObserver((mutations) => {
             attachSyncScroll();
+            
+            const readTextArea = document.getElementById('read_note_main');
+            if (readTextArea && (!window.easymde_read_editor || !document.body.contains(window.easymde_read_editor.element))) {
+                window.easymde_read_editor = new EasyMDE({ 
+                    element: readTextArea, spellChecker: false, status: false,
+                    renderingConfig: { codeSyntaxHighlighting: true },
+                    toolbar: ["bold", "italic", "heading", "|", "quote", "code", "unordered-list", "ordered-list", "|", "link", "image", "|", "preview", "guide"]
+                });
+                
+                let readTimeout = null;
+                window.easymde_read_editor.codemirror.on("change", function() {
+                    const content = window.easymde_read_editor.value();
+                    clearTimeout(readTimeout);
+                    readTimeout = setTimeout(function() {
+                        Shiny.setInputValue('read_note_main', content); 
+                    }, 300); 
+                    
+                    checkEncounter(content, 'read');
+                    const counterEl = document.getElementById('loot-counter');
+                    if (counterEl) {
+                        const count = (content.match(/[?]/g) || []).length;
+                        const currentCount = parseInt(counterEl.getAttribute('data-count') || '0');
+                        if (count !== currentCount) {
+                            counterEl.innerText = `Flashcards Captured: ${count} 💎`;
+                            counterEl.setAttribute('data-count', count);
+                            if (count > currentCount) {
+                                counterEl.classList.add('loot-pop');
+                                setTimeout(() => counterEl.classList.remove('loot-pop'), 300);
+                            }
+                        }
+                    }
+                });
+
+                window.easymde_read_editor.codemirror.on("paste", function(editor, e) {
+                    const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+                    for (let index in items) {
+                        const item = items[index];
+                        if (item.kind === 'file') {
+                            const blob = item.getAsFile();
+                            const reader = new FileReader();
+                            reader.onload = function(event) {
+                                Shiny.setInputValue('pasted_read_image_data', event.target.result);
+                                Shiny.setInputValue('pasted_read_image_target', 'read_note_main');
+                                Shiny.setInputValue('pasted_read_image_trigger', Math.random());
+                            };
+                            reader.readAsDataURL(blob);
+                            e.preventDefault(); 
+                        }
+                    }
+                });
+            }
         });
         observer.observe(document.body, { childList: true, subtree: true });
     });
@@ -355,7 +605,6 @@ custom_js = """
         updateMindMap(colored_md);
     });
 
-    // --- NEW BLOB GENERATOR FOR LARGE PDFS ---
     let currentPdfUrl = null;
     Shiny.addCustomMessageHandler('load_pdf_blob', function(dataUri) {
         setTimeout(async function() {
@@ -367,42 +616,39 @@ custom_js = """
                     if (currentPdfUrl) { URL.revokeObjectURL(currentPdfUrl); }
                     currentPdfUrl = URL.createObjectURL(blob);
                     iframe.src = currentPdfUrl;
-                } catch (e) {
-                    console.error("Failed to load PDF blob:", e);
-                }
+                } catch (e) { console.error("Failed to load PDF blob:", e); }
             }
         }, 300); 
-    });
-
-    document.addEventListener('paste', function(e) {
-        const target = e.target;
-        if (target.tagName === 'TEXTAREA' && target.id === 'read_note_main') {
-            const items = (e.clipboardData || e.originalEvent.clipboardData).items;
-            for (let index in items) {
-                const item = items[index];
-                if (item.kind === 'file') {
-                    const blob = item.getAsFile();
-                    const reader = new FileReader();
-                    reader.onload = function(event) {
-                        Shiny.setInputValue('pasted_read_image_data', event.target.result);
-                        Shiny.setInputValue('pasted_read_image_target', target.id);
-                        Shiny.setInputValue('pasted_read_image_trigger', Math.random());
-                    };
-                    reader.readAsDataURL(blob);
-                    e.preventDefault(); 
-                }
-            }
-        }
     });
 
     Shiny.addCustomMessageHandler('update_editor', function(markdown) {
         window.isFirstLoadLab = true; 
         window.initialConceptsLab.clear();
+        window.sessionStartTime = Date.now();
+        window.lastEncounterTime = Date.now();
+        window.overtimeEncounters = 0;
+        window.currentHazardPeak = window.baseHazardPeak;
         if (window.easymde_editor) { window.easymde_editor.value(markdown); }
         Shiny.setInputValue('map_content_for_map', markdown, {priority: 'event'});
     });
 
     Shiny.addCustomMessageHandler('insert_at_cursor', function(payload) {
+        let cm = null;
+        let editor = null;
+        if (payload.target === 'read_note_main' && window.easymde_read_editor) {
+            editor = window.easymde_read_editor; cm = editor.codemirror;
+        } else if (payload.target === 'map_content' && window.easymde_editor) {
+            editor = window.easymde_editor; cm = editor.codemirror;
+        }
+        if (cm) {
+            const doc = cm.getDoc();
+            const cursor = doc.getCursor();
+            doc.replaceRange(payload.text, cursor);
+            if (payload.text.includes('![') && editor && !editor.isPreviewActive()) {
+                editor.togglePreview();
+            }
+            return;
+        }
         const el = document.getElementById(payload.target);
         if (el) {
             const start = el.selectionStart;
@@ -743,6 +989,7 @@ app_ui = ui.page_navbar(
                 ui.markdown("### **Session Timer**"),
                 ui.input_action_button("start_sl_btn", "Start Note-taking", class_="btn-info w-100 mb-2"),
                 ui.input_action_button("end_sl_btn", "End Session & Log", class_="btn-danger w-100"),
+                ui.output_ui("sl_live_timer_ui"),
                 ui.hr(),
                 ui.input_text_area("map_content", None, height="200px", 
                     value="# Central Concept\n## Branch 1\n- Detail A\n\n- Example Math: $y_i$"),
@@ -785,7 +1032,7 @@ app_ui = ui.page_navbar(
         )
     ),
     
-    title="OptiSystem v6.46",
+    title="OptiSystem v6.49",
     header=ui.output_ui("gamification_hud") 
 )
 
@@ -915,6 +1162,15 @@ def server(input, output, session):
         fatigue_peak = get_survival_peak()
         
         return ui.div(
+            ui.div(
+                "⏱️ Session: ",
+                ui.tags.span("00:00", id="session-timer-display", style=(
+                    "font-variant-numeric: tabular-nums; font-weight: 900; "
+                    "color: #0d6efd; min-width: 52px; display: inline-block;"
+                )),
+                class_="hud-item",
+                style="border-right: 1px solid #dee2e6; padding-right: 12px; font-size: 0.9em;"
+            ),
             ui.div(f"⏱️ Drop-out Peak: {fatigue_peak:.1f}m", class_="hud-item text-muted", style="font-size: 0.85em; border-right: 1px solid #dee2e6; padding-right: 10px;"),
             ui.div(f"🔥 {streak} Day Streak", class_="hud-item hud-streak"),
             ui.div(
@@ -1154,13 +1410,33 @@ def server(input, output, session):
     # ==========================
     @reactive.Effect
     @reactive.event(input.purge_completed)
-    def _purge_tasks():
+    def _request_purge():
+        m = ui.modal(
+            "Are you sure you want to delete all completed tasks? This cannot be undone.",
+            title="Confirm Purge",
+            footer=ui.div(
+                ui.input_action_button("cancel_purge", "Cancel", class_="btn-secondary"),
+                ui.input_action_button("confirm_purge", "Yes, Purge", class_="btn-danger")
+            )
+        )
+        ui.modal_show(m)
+
+    @reactive.Effect
+    @reactive.event(input.cancel_purge)
+    def _cancel_p():
+        ui.modal_remove()
+
+    @reactive.Effect
+    @reactive.event(input.confirm_purge)
+    def _execute_purge():
+        ui.modal_remove()
         df = load_tasks()
         if df.empty: return
         df = df[df["Progress"] < 100].reset_index(drop=True)
         df['ID'] = df.index
         df.to_csv(TASK_LOG, index=False)
         refresh_trigger.set(refresh_trigger() + 1)
+        ui.notification_show("Completed tasks purged.", type="message")
 
     @output
     @render.ui
@@ -1201,11 +1477,31 @@ def server(input, output, session):
 
     @reactive.Effect
     @reactive.event(input.delete_task)
-    def _delete():
+    def _request_delete():
+        m = ui.modal(
+            "Are you sure you want to delete this task?",
+            title="Confirm Delete",
+            footer=ui.div(
+                ui.input_action_button("cancel_delete", "Cancel", class_="btn-secondary"),
+                ui.input_action_button("confirm_delete", "Yes, Delete", class_="btn-danger")
+            )
+        )
+        ui.modal_show(m)
+
+    @reactive.Effect
+    @reactive.event(input.cancel_delete)
+    def _cancel_d():
+        ui.modal_remove()
+
+    @reactive.Effect
+    @reactive.event(input.confirm_delete)
+    def _execute_delete():
+        ui.modal_remove()
         df = load_tasks().drop(int(input.task_to_edit())).reset_index(drop=True)
         df['ID'] = df.index
         df.to_csv(TASK_LOG, index=False)
         refresh_trigger.set(refresh_trigger() + 1)
+        ui.notification_show("Task deleted.", type="message")
 
     @reactive.Effect
     @reactive.event(input.create_mod)
@@ -1399,6 +1695,20 @@ def server(input, output, session):
     # ==========================
     # STUDY LAB LOGIC
     # ==========================
+    @reactive.calc
+    def current_time_tick():
+        reactive.invalidate_later(1)
+        return time.time()
+
+    @output
+    @render.ui
+    def sl_live_timer_ui():
+        if sl_active():
+            elapsed = int(current_time_tick() - sl_start_time())
+            mins, secs = divmod(elapsed, 60)
+            return ui.h3(f"⏱️ {mins:02d}:{secs:02d}", style="color: #dc3545; text-align: center; margin-top: 10px; font-weight: bold;")
+        return ui.div()
+
     @reactive.Effect
     @reactive.event(input.start_sl_btn)
     def _start_sl():
@@ -1518,8 +1828,10 @@ def server(input, output, session):
         mod_dir = os.path.join(BASE_PATH, input.map_mod())
         os.makedirs(mod_dir, exist_ok=True)
         with open(os.path.join(mod_dir, filename), "wb") as f: f.write(base64.b64decode(encoded))
-        full_content = input.map_content() + f"\n- ![{filename}](/files/{input.map_mod()}/{filename})"
-        await session.send_custom_message("update_editor", full_content) 
+        
+        # Insert image accurately at cursor position instead of appending to end
+        img_md = f"\n![{filename}](/files/{input.map_mod()}/{filename})\n"
+        await session.send_custom_message("insert_at_cursor", {"target": "map_content", "text": img_md})
 
     # ==========================
     # REVISION HUB LOGIC 
@@ -1781,8 +2093,8 @@ def server(input, output, session):
                     ui.div(ui.markdown(display_raw), class_="slide-content flashcard-box", style="font-size: 1.6em; text-align: center;"),
                     ui.hr(),
                     ui.layout_columns(
-                        ui.HTML('<button class="btn btn-outline-danger btn-lg w-100" onclick="Shiny.setInputValue(\'hard_answer\', \'left\', {priority: \'event\'})">⬅️ Needs Review</button>'),
-                        ui.HTML('<button class="btn btn-outline-success btn-lg w-100" onclick="Shiny.setInputValue(\'hard_answer\', \'right\', {priority: \'event\'})">Got it ➡️</button>'),
+                        ui.HTML('<button id="btn_hard_left" class="btn btn-outline-danger btn-lg w-100" onclick="Shiny.setInputValue(\'hard_answer\', \'left\', {priority: \'event\'})">⬅️ Needs Review</button>'),
+                        ui.HTML('<button id="btn_hard_right" class="btn btn-outline-success btn-lg w-100" onclick="Shiny.setInputValue(\'hard_answer\', \'right\', {priority: \'event\'})">Got it ➡️</button>'),
                         col_widths=(6, 6)
                     ),
                     class_="card p-4 shadow-sm slide-container"
