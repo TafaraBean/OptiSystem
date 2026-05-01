@@ -6,11 +6,11 @@ BWIN817,seminar_5_L15.md,How is the Expected Credit Loss (ECL) mathematically ca
 BWIN817,seminar_5_L15.md,What is the fundamental difference between the Basel framework and IFRS 9?,4,2
 BWIN817,seminar_5_L15.md,What dictates whether a 12-month ECL or a Lifetime ECL is calculated under IFRS 9?,4,3
 BWIN817,seminar_5_L15.md,Why might a logistic regression model for discrete hazard rates omit a global intercept?,4,4
-BWIN817,L16_seminar_5.md,What is a person-period data set and why is it necessary?,1,1
-BWIN817,L16_seminar_5.md,How is a discrete-time hazard defined?,1,1
-BWIN817,L16_seminar_5.md,What is the difference between left censoring and left truncation?,1,1
-BWIN817,L16_seminar_5.md,What is right censoring?,1,1
-BWIN817,L16_seminar_5.md,What is the difference between static and dynamic variables?,1,1
+BWIN817,L16_seminar_5.md,What is a person-period data set and why is it necessary?,2,2
+BWIN817,L16_seminar_5.md,How is a discrete-time hazard defined?,2,2
+BWIN817,L16_seminar_5.md,What is the difference between left censoring and left truncation?,2,2
+BWIN817,L16_seminar_5.md,What is right censoring?,2,2
+BWIN817,L16_seminar_5.md,What is the difference between static and dynamic variables?,2,2
 BWIN817,L17_seminar_5.md,What are some issues ?,1,1
 BWIN817,L17_seminar_5.md,How can we handle large numbers of observations?,1,0
 BWIN817,L17_seminar_5.md,How can we handle unequal intervals?,1,1
