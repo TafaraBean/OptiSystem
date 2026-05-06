@@ -4,8 +4,36 @@ import base64
 import time
 import re
 import random
+import difflib
+import asyncio
+import threading
 from datetime import datetime
 from shiny import App, render, ui, reactive
+
+# --- ML DEPENDENCIES ---
+try:
+    import fitz
+    from sentence_transformers import SentenceTransformer, util
+except ImportError:
+    fitz = None
+    SentenceTransformer = None
+    util = None
+
+# Preload Semantic Model asynchronously to prevent blocking the UI
+SEMANTIC_MODEL = None
+
+def _preload_model():
+    global SEMANTIC_MODEL
+    
+    if SentenceTransformer is not None:
+        try:
+            print("Loading Semantic Model (BAAI/bge-small-en-v1.5)...")
+            SEMANTIC_MODEL = SentenceTransformer('BAAI/bge-small-en-v1.5')
+            print("Semantic Model loaded successfully.")
+        except Exception as e:
+            print(f"Error loading Semantic model: {e}")
+
+threading.Thread(target=_preload_model, daemon=True).start()
 
 # --- CONFIGURATION ---
 BASE_PATH = os.path.join(os.getcwd(), "OptiSystem_Data")
@@ -115,6 +143,29 @@ custom_js = """
     .hud-level { color: #6f42c1; }
     .hud-xp { color: #198754; font-size: 0.85em; background: #e8f5e9; padding: 2px 8px; border-radius: 12px; margin-left: 8px; border: 1px solid #c3e6cb;}
     
+    /* Fog of War Exploration Mechanics */
+    .fog-text {
+        color: var(--text-muted) !important;
+        background-color: rgba(10, 10, 15, 0.4);
+        border-radius: 3px;
+        filter: blur(1.5px);
+        transition: all 0.3s ease;
+        cursor: help;
+    }
+    .fog-text:hover {
+        filter: blur(0px);
+        color: var(--accent-danger) !important;
+        background-color: rgba(255, 77, 109, 0.15);
+    }
+    .explored-text {
+        color: var(--text-primary) !important;
+        background-color: rgba(0, 217, 126, 0.15);
+        border-radius: 3px;
+        padding: 0 2px;
+        transition: all 0.4s ease;
+        box-shadow: 0 0 8px rgba(0, 217, 126, 0.1);
+    }
+    
     /* Wild Encounter RPG Animations */
     @keyframes popInRPG {
         0% { transform: scale(0.8); opacity: 0; }
@@ -164,82 +215,109 @@ custom_js = """
     window.sessionLoginTime = Date.now();
     window.lastActivityTime  = Date.now();
     window.idleWarningActive = false;
+    window.idleTriggers = 0; // Tracks Engagement Score
     const IDLE_THRESHOLD_MS  = 3 * 60 * 1000; // 3 minutes
 
-    // Safely inject focus bar and idle overlay into DOM after it parses
-    document.addEventListener("DOMContentLoaded", function() {
-        const track = document.createElement('div');
-        track.id = 'focus-bar-track';
-        track.innerHTML = '<div id="focus-bar-fill"></div>';
-        document.body.appendChild(track);
+    function ensureOverlaysExist() {
+        if (!document.body) return;
+        
+        if (!document.getElementById('focus-bar-track')) {
+            const track = document.createElement('div');
+            track.id = 'focus-bar-track';
+            track.innerHTML = '<div id="focus-bar-fill"></div>';
+            document.body.appendChild(track);
+        }
 
-        const overlay = document.createElement('div');
-        overlay.id = 'idle-overlay';
-        overlay.innerHTML = `
-            <div style="
-                background: white;
-                padding: 45px 40px;
-                border-radius: 16px;
-                text-align: center;
-                max-width: 500px;
-                width: 90%;
-                box-shadow: 0 25px 70px rgba(0,0,0,0.55);
-                animation: popInRPG 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-                border-top: 6px solid #dc3545;
-            ">
-                <div style="font-size:3.5em; margin-bottom:12px; line-height:1;">🧭</div>
-                <h2 style="color:#dc3545; font-weight:900; margin-bottom:8px; font-size:1.9em; letter-spacing:-0.5px;">You're Drifting.</h2>
-                <p style="color:#6c757d; font-size:1.05em; margin-bottom:8px; line-height:1.6;">
-                    3 minutes passed with no activity detected.<br>
-                    Your future self needs you focused — right now.
-                </p>
-                <div id="idle-elapsed-display" style="
-                    font-size: 2.4em;
-                    font-weight: 900;
-                    color: #dc3545;
-                    margin: 18px 0;
-                    letter-spacing: 2px;
-                    font-variant-numeric: tabular-nums;
-                ">00:00</div>
-                <p style="color:#adb5bd; font-size: 0.85em; margin-bottom: 25px;">time you've been away</p>
-                <button
-                    id="dismiss-idle-btn"
-                    style="
-                        background: #dc3545;
-                        color: white;
-                        border: none;
-                        padding: 15px 40px;
-                        border-radius: 10px;
-                        font-size: 1.15em;
-                        font-weight: 800;
-                        cursor: pointer;
-                        width: 100%;
-                        letter-spacing: 0.5px;
-                        transition: transform 0.1s, filter 0.2s;
-                    "
-                    onmouseover="this.style.filter='brightness(1.15)'"
-                    onmouseout="this.style.filter='brightness(1)'"
-                    onmousedown="this.style.transform='scale(0.97)'"
-                    onmouseup="this.style.transform='scale(1)'"
-                    onclick="dismissIdle()"
-                >
-                    I'm Back — Resume Focus 🔥
-                </button>
-            </div>`;
-        overlay.style.cssText = `
-            display: none;
-            position: fixed;
-            top: 0; left: 0;
-            width: 100vw; height: 100vh;
-            background: rgba(10, 10, 20, 0.82);
-            backdrop-filter: blur(4px);
-            z-index: 10000;
-            justify-content: center;
-            align-items: center;
-            flex-direction: column;
-        `;
-        document.body.appendChild(overlay);
-    });
+        if (!document.getElementById('idle-overlay')) {
+            const overlay = document.createElement('div');
+            overlay.id = 'idle-overlay';
+            overlay.innerHTML = `
+                <div style="
+                    background: white;
+                    padding: 45px 40px;
+                    border-radius: 16px;
+                    text-align: center;
+                    max-width: 500px;
+                    width: 90%;
+                    box-shadow: 0 25px 70px rgba(0,0,0,0.55);
+                    animation: popInRPG 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+                    border-top: 6px solid #dc3545;
+                ">
+                    <div style="font-size:3.5em; margin-bottom:12px; line-height:1;">🧭</div>
+                    <h2 style="color:#dc3545; font-weight:900; margin-bottom:8px; font-size:1.9em; letter-spacing:-0.5px;">You're Drifting.</h2>
+                    <p style="color:#6c757d; font-size:1.05em; margin-bottom:8px; line-height:1.6;">
+                        3 minutes passed with no activity detected.<br>
+                        Your future self needs you focused — right now.
+                    </p>
+                    <div id="idle-elapsed-display" style="
+                        font-size: 2.4em;
+                        font-weight: 900;
+                        color: #dc3545;
+                        margin: 18px 0;
+                        letter-spacing: 2px;
+                        font-variant-numeric: tabular-nums;
+                    ">00:00</div>
+                    <p style="color:#adb5bd; font-size: 0.85em; margin-bottom: 25px;">time you've been away</p>
+                    <button
+                        id="dismiss-idle-btn"
+                        style="
+                            background: #dc3545;
+                            color: white;
+                            border: none;
+                            padding: 15px 40px;
+                            border-radius: 10px;
+                            font-size: 1.15em;
+                            font-weight: 800;
+                            cursor: pointer;
+                            width: 100%;
+                            letter-spacing: 0.5px;
+                            transition: transform 0.1s, filter 0.2s;
+                        "
+                        onmouseover="this.style.filter='brightness(1.15)'"
+                        onmouseout="this.style.filter='brightness(1)'"
+                        onmousedown="this.style.transform='scale(0.97)'"
+                        onmouseup="this.style.transform='scale(1)'"
+                        onclick="dismissIdle()"
+                    >
+                        I'm Back — Resume Focus 🔥
+                    </button>
+                    <button
+                        id="escape-valve-btn"
+                        style="
+                            background: transparent;
+                            color: #dc3545;
+                            border: 2px solid #dc3545;
+                            padding: 12px 20px;
+                            border-radius: 10px;
+                            font-size: 1em;
+                            font-weight: 700;
+                            cursor: pointer;
+                            width: 100%;
+                            margin-top: 12px;
+                            transition: all 0.2s;
+                        "
+                        onmouseover="this.style.background='rgba(220,53,69,0.08)'"
+                        onmouseout="this.style.background='transparent'"
+                        onclick="triggerEscapeValve()"
+                    >
+                        Brain Fried? 3-Min Flashcard Cool-Down 🧠
+                    </button>
+                </div>`;
+            overlay.style.cssText = `
+                display: none;
+                position: fixed;
+                top: 0; left: 0;
+                width: 100vw; height: 100vh;
+                background: rgba(10, 10, 20, 0.82);
+                backdrop-filter: blur(4px);
+                z-index: 10000;
+                justify-content: center;
+                align-items: center;
+                flex-direction: column;
+            `;
+            document.body.appendChild(overlay);
+        }
+    }
 
     function resetIdleTimer() {
         window.lastActivityTime = Date.now();
@@ -254,13 +332,33 @@ custom_js = """
         const fill = document.getElementById('focus-bar-fill');
         if (fill) { fill.classList.remove('bar-critical'); fill.style.width = '100%'; fill.style.backgroundColor = '#2d9e6b'; }
     }
+    
+    function triggerEscapeValve() {
+        dismissIdle();
+        Shiny.setInputValue('escape_valve_triggered', Math.random(), {priority: 'event'});
+    }
 
     function showIdleOverlay() {
         if (window.idleWarningActive) return;
         window.idleWarningActive = true;
+        // Track the drop in engagement
+        window.idleTriggers = (window.idleTriggers || 0) + 1;
+        Shiny.setInputValue('current_idle_triggers', window.idleTriggers);
+        
         const overlay = document.getElementById('idle-overlay');
         if (overlay) overlay.style.display = 'flex';
     }
+
+    // Python hooks in here on new sessions to reset metrics
+    Shiny.addCustomMessageHandler('reset_session_metrics', function(_) {
+        window.idleTriggers = 0;
+        window.sessionStartTime = Date.now();
+        window.lastEncounterTime = Date.now();
+        window.overtimeEncounters = 0;
+        window.currentHazardPeak = window.baseHazardPeak;
+        resetIdleTimer();
+        Shiny.setInputValue('current_idle_triggers', 0);
+    });
 
     function formatSessionTime(ms) {
         const totalSecs = Math.floor(ms / 1000);
@@ -287,6 +385,8 @@ custom_js = """
 
     // Master heartbeat: updates timer display + checks idle every second
     setInterval(function() {
+        ensureOverlaysExist();
+
         const now    = Date.now();
         const idleMs = now - window.lastActivityTime;
         const pct    = Math.max(0, 1 - idleMs / IDLE_THRESHOLD_MS);
@@ -349,6 +449,7 @@ custom_js = """
     window.isFirstLoadLab = true;
     window.initialConceptsRead = new Set();
     window.isFirstLoadRead = true;
+    window.originalSourceHTML = null; // Stores pristine source code for the Fog of War engine
     
     Shiny.addCustomMessageHandler('init_survival_model', function(peak) {
         if (peak && peak > 5) { 
@@ -356,6 +457,75 @@ custom_js = """
             window.currentHazardPeak = peak;
         }
     });
+
+    // --- FOG OF WAR: SOFT-MARGIN CONCEPT HIGHLIGHTER ---
+    function updateFogOfWar(notesText) {
+        const sourceMap = document.getElementById('fog-of-war-container');
+        if (!sourceMap) return;
+
+        if (!window.originalSourceHTML) {
+            window.originalSourceHTML = sourceMap.innerHTML; // Cache pure HTML on first run
+        }
+
+        const stopwords = new Set(["with", "from", "this", "that", "were", "been", "being", "have", "does", "could", "will", "would", "should", "might", "must", "what", "when", "where", "which", "then", "than", "because", "since", "until", "only", "also", "very", "just", "about", "into", "through", "after", "before", "over", "under", "between", "some", "such", "same", "every", "other", "another", "their", "there", "they"]);
+        
+        // Extract 4+ letter stems from user notes (pseudo-stemming for soft-margin matches)
+        const noteWords = notesText.toLowerCase().match(/\\b[a-z]{4,}\\b/g) || [];
+        const noteStems = new Set();
+        noteWords.forEach(w => {
+            if (!stopwords.has(w)) noteStems.add(w.substring(0, 5));
+        });
+
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = window.originalSourceHTML;
+        
+        let totalConcepts = 0;
+        let capturedConcepts = 0;
+
+        // Safely walk text nodes to avoid destroying HTML attributes
+        function walk(node) {
+            if (node.nodeType === 3) { // Text node
+                const text = node.nodeValue;
+                const replaced = text.replace(/\\b[a-zA-Z]{4,}\\b/g, function(match) {
+                    const lower = match.toLowerCase();
+                    if (stopwords.has(lower)) return match;
+                    
+                    totalConcepts++;
+                    if (noteStems.has(lower.substring(0, 5))) {
+                        capturedConcepts++;
+                        return `|EXPLORED|${match}|/EXPLORED|`;
+                    } else {
+                        return `|FOG|${match}|/FOG|`;
+                    }
+                });
+                
+                if (replaced !== text) {
+                    const span = document.createElement('span');
+                    span.innerHTML = replaced
+                        .replace(/\\|EXPLORED\\|/g, '<span class="explored-text">')
+                        .replace(/\\|\\/EXPLORED\\|/g, '</span>')
+                        .replace(/\\|FOG\\|/g, '<span class="fog-text">')
+                        .replace(/\\|\\/FOG\\|/g, '</span>');
+                    node.parentNode.replaceChild(span, node);
+                }
+            } else if (node.nodeType === 1 && node.nodeName !== 'SCRIPT' && node.nodeName !== 'STYLE') {
+                Array.from(node.childNodes).forEach(walk);
+            }
+        }
+        
+        Array.from(tempDiv.childNodes).forEach(walk);
+        sourceMap.innerHTML = tempDiv.innerHTML; // Update DOM
+        
+        // Update Exploration HUD
+        const pct = totalConcepts > 0 ? Math.round((capturedConcepts / totalConcepts) * 100) : 0;
+        const pctEl = document.getElementById('exploration-pct');
+        if (pctEl) {
+            pctEl.innerText = `🗺️ Map Explored: ${pct}%`;
+            if (pct >= 80) pctEl.style.borderColor = '#198754';
+            else if (pct >= 50) pctEl.style.borderColor = '#fd7e14';
+            else pctEl.style.borderColor = 'rgba(111, 66, 193, 0.25)';
+        }
+    }
     
     function extractConceptsWithAnswers(text) {
         if (!text) return [];
@@ -549,6 +719,9 @@ custom_js = """
             
             const readTextArea = document.getElementById('read_note_main');
             if (readTextArea && (!window.easymde_read_editor || !document.body.contains(window.easymde_read_editor.element))) {
+                
+                window.originalSourceHTML = null; // Clear cached DOM on fresh load
+                
                 window.easymde_read_editor = new EasyMDE({ 
                     element: readTextArea, spellChecker: false, status: false,
                     renderingConfig: { codeSyntaxHighlighting: true },
@@ -564,6 +737,8 @@ custom_js = """
                     }, 300); 
                     
                     checkEncounter(content, 'read');
+                    updateFogOfWar(content); // Run Semantic Mapping Live
+                    
                     const counterEl = document.getElementById('loot-counter');
                     if (counterEl) {
                         const count = (content.match(/[?]/g) || []).length;
@@ -710,6 +885,137 @@ custom_js = """
 </script>
 """
 
+# --- NLP DEPENDENCIES ---
+def extract_source_chunks(text: str, sentences_per_chunk: int = 2) -> list[dict]:
+    """Split source into overlapping semantic chunks with metadata."""
+    # Breaking on newlines or sentence boundaries ensures headers/bullets are evaluated contextually
+    raw = re.split(r'(?<=[.!?\n])\s+', text)
+    sentences = [s.strip() for s in raw if len(s.strip()) > 15]
+    
+    chunks = []
+    for i in range(0, len(sentences), sentences_per_chunk):
+        window = sentences[i : i + sentences_per_chunk + 1]  # +1 overlap
+        chunk_text = '\n'.join(window)
+        chunks.append({
+            "text": chunk_text,
+            "start_sentence": i,
+            "idx": len(chunks)
+        })
+    return chunks
+
+def extract_pdf_chunks(pdf_path: str) -> list[dict]:
+    """Extract semantic chunks from PDF, retaining page number."""
+    if fitz is None: return []
+    doc = fitz.open(pdf_path)
+    all_chunks = []
+    
+    for page_num, page in enumerate(doc):
+        blocks = page.get_text("blocks")
+        for block in blocks:
+            text = block[4].strip()
+            if len(text) < 40 or block[6] != 0: 
+                continue
+            all_chunks.append({
+                "text": text,
+                "page": page_num + 1,        
+                "bbox": block[:4],           
+                "idx": len(all_chunks)
+            })
+    
+    doc.close()
+    return all_chunks
+
+def compute_semantic_coverage(
+    source_chunks: list[dict],
+    note_text: str,
+    covered_threshold: float = 0.78,
+    partial_threshold: float = 0.68
+) -> tuple[float, list[dict]]:
+    """
+    Strict Soft-margin semantic coverage with Context Windows.
+    Returns (coverage_pct, annotated_chunks)
+    """
+    if not source_chunks or not note_text.strip() or SEMANTIC_MODEL is None:
+        return 0.0, source_chunks
+    
+    # 1. The Gibberish Gatekeeper
+    word_count = len(re.findall(r'\b[a-zA-Z]{3,}\b', note_text))
+    if word_count < 5:
+        annotated = [{**chunk, "coverage_score": 0.0, "status": "missing"} for chunk in source_chunks]
+        return 0.0, annotated
+    
+    # 2. Encode Source Text
+    source_texts = [c["text"] for c in source_chunks]
+    source_embs = SEMANTIC_MODEL.encode(source_texts, convert_to_tensor=True, normalize_embeddings=True)
+    
+    # 3. Contextual Note Chunking
+    raw_note_sentences = [s.strip() for s in re.split(r'(?<=[.!?\n])\s+', note_text) if len(s.split()) > 3]
+    if not raw_note_sentences:
+        raw_note_sentences = [note_text]
+        
+    note_chunks = []
+    for i in range(len(raw_note_sentences)):
+        window = raw_note_sentences[i : i + 2] 
+        note_chunks.append(' '.join(window))
+        
+    note_embs = SEMANTIC_MODEL.encode(note_chunks, convert_to_tensor=True, normalize_embeddings=True)
+    
+    # 4. Compare and Score
+    sim_matrix = util.cos_sim(source_embs, note_embs)
+    best_scores = sim_matrix.max(dim=1).values.tolist()
+    
+    annotated = []
+    covered_weight = 0.0
+    total_weight = len(source_chunks)
+    
+    for chunk, score in zip(source_chunks, best_scores):
+        if score >= covered_threshold:
+            status = 'covered'
+            covered_weight += 1.0
+        elif score >= partial_threshold:
+            status = 'partial'
+            covered_weight += 0.4   # Nerfed to heavily penalize weak matches
+        else:
+            status = 'missing'
+        
+        annotated.append({**chunk, "coverage_score": round(score, 3), "status": status})
+    
+    pct = (covered_weight / total_weight) if total_weight > 0 else 0.0
+    return round(pct, 3), annotated
+
+def render_fog_of_war_html(annotated_chunks: list[dict]) -> str:
+    """Renders source text with coverage overlays."""
+    if not annotated_chunks:
+        return ""
+    
+    parts = []
+    for chunk in annotated_chunks:
+        text = chunk["text"].replace('\n', '<br>')
+        status = chunk.get("status", "missing")
+        score = chunk.get("coverage_score", 0)
+        
+        if status == "covered":
+            style = "background: rgba(25,135,84,0.12); border-left: 3px solid #198754; opacity: 1.0;"
+            icon = "✅"
+        elif status == "partial":
+            style = "background: rgba(253,126,20,0.12); border-left: 3px solid #fd7e14; opacity: 0.85;"
+            icon = "🟡"
+        else:
+            style = "background: rgba(108,117,125,0.08); border-left: 3px solid #dee2e6; opacity: 0.55; filter: grayscale(0.3);"
+            icon = "⬜"
+        
+        tooltip = f"Coverage score: {score:.0%}"
+        parts.append(
+            f'<div style="padding: 8px 12px; margin-bottom: 6px; border-radius: 4px; {style}" '
+            f'title="{tooltip}" class="fog-chunk fog-{status}">'
+            f'<span style="font-size:0.7em; float:right; opacity:0.6">{icon} {score:.0%}</span>'
+            f'{text}'
+            f'</div>'
+        )
+    
+    return "".join(parts)
+
+
 # --- HELPERS ---
 def load_tasks():
     if os.path.exists(TASK_LOG):
@@ -798,21 +1104,17 @@ def normalize_text(t):
     """Bulletproof string normalizer to fix invisible Markdown/PDF characters"""
     if pd.isna(t): return ""
     text = str(t).lower()
-    # Remove all non-alphanumeric chars except spaces to ensure matching is bulletproof
     text = re.sub(r'[^a-z0-9\s]', '', text)
-    # Collapse multiple spaces into one and strip edges
     return re.sub(r'\s+', ' ', text).strip()
 
 def update_node_mastery(module, map_name, node_raw, is_correct):
     if not map_name: return
-    # STRICT NORMALIZATION: Always replace spaces with underscores for DB tracking
     map_name = map_name.strip().replace(" ", "_")
     if not map_name.endswith(".md"): map_name += ".md"
     
     df = load_node_mastery()
     norm_node = normalize_text(node_raw)
     
-    # Create a normalized temporary column for safe matching
     df['norm_raw'] = df['Node_Raw'].apply(normalize_text)
     mask = (df["Module"] == module) & (df["Map"] == map_name) & (df['norm_raw'] == norm_node)
     
@@ -827,7 +1129,6 @@ def update_node_mastery(module, map_name, node_raw, is_correct):
         })
         df = pd.concat([df, new_row], ignore_index=True)
         
-    # Drop temporary column before saving
     if 'norm_raw' in df.columns:
         df = df.drop(columns=['norm_raw'])
         
@@ -835,8 +1136,6 @@ def update_node_mastery(module, map_name, node_raw, is_correct):
 
 def inject_mastery_colors(module, map_name, raw_md):
     if not map_name: return raw_md
-    
-    # STRICT NORMALIZATION: Ensure we always lookup the version with underscores
     map_name = map_name.strip().replace(" ", "_")
     if not map_name.endswith(".md"): map_name += ".md"
     
@@ -853,7 +1152,6 @@ def inject_mastery_colors(module, map_name, raw_md):
     for line in lines:
         stripped = line.strip()
         if stripped and not stripped.startswith("```") and not stripped.startswith("$$"):
-            # Target ONLY headings to be colored on the mind map (allows leading spaces)
             header_match = re.match(r'^(\s*#{1,6}\s)(.*)', line)
 
             if header_match:
@@ -862,10 +1160,10 @@ def inject_mastery_colors(module, map_name, raw_md):
                 raw_text = normalize_text(clean_content)
                 score = score_dict.get(raw_text, -1)
 
-                if score == -1: color = "#adb5bd" # Untested / Structural Node (Gray)
-                elif score < 0.60: color = "#dc3545" # Gap (Red)
-                elif score < 0.80: color = "#fd7e14" # Review (Orange)
-                else: color = "#198754" # Mastered (Green)
+                if score == -1: color = "#adb5bd" 
+                elif score < 0.60: color = "#dc3545" 
+                elif score < 0.80: color = "#fd7e14" 
+                else: color = "#198754" 
 
                 line = f"{prefix}<span style='color:{color}'>{clean_content}</span>"
         new_lines.append(line)
@@ -1032,7 +1330,8 @@ app_ui = ui.page_navbar(
         )
     ),
     
-    title="OptiSystem v6.49",
+    title="OptiSystem v6.50",
+    id="main_nav",
     header=ui.output_ui("gamification_hud") 
 )
 
@@ -1042,11 +1341,15 @@ def server(input, output, session):
     user_stats_reactive = reactive.Value(load_user_stats())
     
     read_state = reactive.Value({"mode": None, "data": None})
+    read_source_chunks = reactive.Value([])
+    read_coverage_data = reactive.Value([])
+    read_coverage_pct = reactive.Value(0.0)
+
     sl_active = reactive.Value(False)
     sl_start_time = reactive.Value(0.0)
 
     # Revision Hub Session States (Locked to prevent UI jump bugs)
-    rev_phase = reactive.Value("setup") # setup, easy, transition, hard, summary
+    rev_phase = reactive.Value("setup") 
     rev_slides = reactive.Value([])
     rev_current_idx = reactive.Value(0)
     rev_start_time = reactive.Value(0.0)
@@ -1065,6 +1368,8 @@ def server(input, output, session):
     blurt_start_time = reactive.Value(0.0)
     blurt_active_mod = reactive.Value("")
     blurt_active_map = reactive.Value("")
+    blurt_coverage_data = reactive.Value([])
+    blurt_coverage_pct = reactive.Value(0.0)
     
     # Wild Encounter Session State
     wild_encounter_state = reactive.Value(None)
@@ -1181,6 +1486,15 @@ def server(input, output, session):
             class_="gamification-hud"
         )
         
+    # --- ESCAPE VALVE LOGIC ---
+    @reactive.Effect
+    @reactive.event(input.escape_valve_triggered)
+    async def _handle_escape_valve():
+        ui.update_navs("main_nav", selected="Revision Hub")
+        grant_xp(50)
+        ui.notification_show("Pivoted to Flashcards. Cool-down lap activated! +50 XP 🧠", type="message", duration=5)
+        await session.send_custom_message("reset_session_metrics", None)
+
     # --- WILD ENCOUNTER LOGIC ---
     @reactive.Effect
     @reactive.event(input.wild_encounter)
@@ -1547,6 +1861,11 @@ def server(input, output, session):
     def _process_reading():
         pdf_info = input.upload_pdf()
         text_source = input.read_source()
+        
+        # Reset semantic coverage
+        read_source_chunks.set([])
+        read_coverage_data.set([])
+        read_coverage_pct.set(0.0)
 
         if pdf_info:
             try:
@@ -1557,6 +1876,10 @@ def server(input, output, session):
                 
                 data_uri = f"data:application/pdf;base64,{pdf_b64}"
                 
+                chunks = extract_pdf_chunks(pdf_path)
+                read_source_chunks.set(chunks)
+                read_coverage_data.set(chunks)
+                
                 read_state.set({
                     "mode": "pdf", 
                     "data": data_uri
@@ -1566,11 +1889,86 @@ def server(input, output, session):
                 ui.notification_show(f"Failed to load PDF: {str(e)}", type="error")
                 
         elif text_source and text_source.strip():
+            chunks = extract_source_chunks(text_source)
+            read_source_chunks.set(chunks)
+            read_coverage_data.set(chunks)
+            
             read_state.set({"mode": "text", "data": text_source})
             ui.notification_show("Loaded text for aligned reading.", type="message")
             
         else:
             ui.notification_show("Please upload a PDF or paste text/LaTeX first.", type="warning")
+
+    @reactive.Effect
+    @reactive.event(input.read_note_main)
+    async def _recompute_coverage():
+        note = input.read_note_main()
+        chunks = read_source_chunks()
+        if not chunks or not note:
+            read_coverage_pct.set(0.0)
+            return
+
+        def compute():
+            if SEMANTIC_MODEL is None:
+                return 0.0, chunks
+            return compute_semantic_coverage(chunks, note)
+
+        pct, annotated = await asyncio.to_thread(compute)
+        read_coverage_data.set(annotated)
+        read_coverage_pct.set(pct)
+
+    @output
+    @render.ui
+    def coverage_hud_ui():
+        pct = read_coverage_pct()
+        pct_int = int(pct * 100)
+        
+        color = "#198754" if pct >= 0.80 else "#fd7e14" if pct >= 0.50 else "#dc3545"
+        label = "🗺️ Fully Mapped!" if pct >= 0.80 else "🔍 Exploring..." if pct >= 0.50 else "🌫️ Mostly Unexplored"
+        
+        return ui.div(
+            ui.div(
+                ui.span(f"{pct_int}%", style=f"font-size:1.5em; font-weight:900; color:{color};"),
+                ui.span(" Conceptual Coverage", style="font-size:0.85em; color:gray; margin-left:6px;"),
+                style="margin-bottom: 6px;"
+            ),
+            ui.div(
+                ui.div(
+                    class_="progress-bar",
+                    style=f"width:{pct_int}%; background:{color}; transition: width 0.8s ease;"
+                ),
+                class_="progress", style="height: 10px; border-radius: 5px; background: rgba(0,0,0,0.05);"
+            ),
+            ui.p(label, style="font-size:0.8em; color:gray; margin-top:4px; margin-bottom:0; font-weight: bold;"),
+            style="padding: 12px; background:#f8f9fa; border-radius:8px; border: 1px solid #dee2e6; margin-bottom:10px; width: 100%;"
+        )
+
+    @output
+    @render.ui
+    def missing_concepts_ui():
+        annotated = read_coverage_data()
+        if not annotated: return ui.div()
+        missing = [c for c in annotated if c.get("status", "missing") == "missing"]
+        
+        if not missing:
+            return ui.div(ui.p("✅ All key concepts captured!", style="color:#198754; font-weight:bold; padding: 15px;"))
+        
+        items = []
+        for chunk in missing[:8]:
+            page_info = f"p.{chunk['page']}" if "page" in chunk else ""
+            items.append(
+                ui.div(
+                    ui.span(page_info, class_="badge bg-secondary me-2") if page_info else ui.span(),
+                    ui.span(chunk["text"][:120] + "...", style="font-size:0.85em; color:#495057;"),
+                    style="padding: 8px; margin-bottom: 6px; background:#fff3cd; border-radius:4px; border-left: 3px solid #ffc107;"
+                )
+            )
+        
+        return ui.div(
+            ui.p(f"⬜ {len(missing)} concepts not yet captured:", style="font-weight:bold; color:#dc3545; margin-top: 15px; margin-bottom: 10px;"),
+            *items,
+            style="padding: 15px; border-top: 2px dashed #dee2e6;"
+        )
 
     @output
     @render.ui
@@ -1588,10 +1986,15 @@ def server(input, output, session):
                 ui.layout_columns(
                     ui.div(
                         ui.tags.iframe(id="pdf-viewer-iframe", src="", width="100%", height="800px", style="border: none; border-radius: 5px;"),
-                        class_="reading-source-pane", style="padding: 0; overflow: hidden;"
+                        ui.output_ui("missing_concepts_ui"),
+                        class_="reading-source-pane", style="padding: 0; overflow: hidden; height: 800px; overflow-y: auto;"
                     ),
                     ui.div(
-                        ui.div(ui.span("Flashcards Captured: 0 💎", id="loot-counter", **{"data-count": "0"}), style="margin-bottom: 10px; display: flex; justify-content: flex-end;"),
+                        ui.output_ui("coverage_hud_ui"),
+                        ui.div(
+                            ui.span("Flashcards Captured: 0 💎", id="loot-counter", **{"data-count": "0"}), 
+                            style="margin-bottom: 10px; display: flex; justify-content: flex-end; gap: 12px; align-items: center; font-weight: bold;"
+                        ),
                         ui.input_text_area(
                             "read_note_main", 
                             label=None, 
@@ -1607,16 +2010,25 @@ def server(input, output, session):
             )
             
         else:
-            safe_source = protect_math(state["data"])
+            annotated_html = render_fog_of_war_html(read_coverage_data())
+            if not annotated_html:
+                annotated_html = ui.markdown(protect_math(state["data"]))
+            else:
+                annotated_html = ui.HTML(annotated_html)
+                
             return ui.div(
                 ui.layout_columns(
                     ui.div(
-                        ui.markdown(safe_source), 
+                        annotated_html, 
                         class_="reading-source-pane sync-scroll-left", 
                         style="height: 800px; overflow-y: auto;"
                     ),
                     ui.div(
-                        ui.div(ui.span("Flashcards Captured: 0 💎", id="loot-counter", **{"data-count": "0"}), style="margin-bottom: 10px; display: flex; justify-content: flex-end;"),
+                        ui.output_ui("coverage_hud_ui"),
+                        ui.div(
+                            ui.span("Flashcards Captured: 0 💎", id="loot-counter", **{"data-count": "0"}), 
+                            style="margin-bottom: 10px; display: flex; justify-content: flex-end; gap: 12px; align-items: center; font-weight: bold;"
+                        ),
                         ui.input_text_area(
                             "read_note_main", 
                             label=None, 
@@ -1711,10 +2123,11 @@ def server(input, output, session):
 
     @reactive.Effect
     @reactive.event(input.start_sl_btn)
-    def _start_sl():
+    async def _start_sl():
         sl_start_time.set(time.time())
         sl_active.set(True)
-        ui.notification_show("Note-taking session started.", type="message")
+        await session.send_custom_message("reset_session_metrics", None)
+        ui.notification_show("Note-taking session started. Deep Work Index active.", type="message")
 
     @reactive.Effect
     @reactive.event(input.end_sl_btn)
@@ -1726,12 +2139,40 @@ def server(input, output, session):
         pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
         sl_active.set(False)
         
-        # Dopamine Hook: Map Encoding Completion
-        grant_xp(50)
-        check_quest_completion("Study Lab", duration=duration)
+        # Calculate DWI
+        triggers = input.current_idle_triggers() if 'current_idle_triggers' in input else 0
+        dwi = max(0, 100 - (triggers * 15))
         
+        if dwi >= 90: grade, gcolor = "S-Tier", "#198754"
+        elif dwi >= 70: grade, gcolor = "A-Grade", "#0dcaf0"
+        elif dwi >= 50: grade, gcolor = "B-Grade", "#fd7e14"
+        else: grade, gcolor = "C-Grade", "#dc3545"
+
+        base_xp = 50
+        bonus = 50 if grade == "S-Tier" else 0
+        grant_xp(base_xp + bonus)
+        check_quest_completion("Study Lab", duration=duration)
         refresh_trigger.set(refresh_trigger() + 1)
-        ui.notification_show(f"Logged {duration} minutes. +50 XP 🌟", type="message")
+        
+        # Show Summary Modal
+        m = ui.modal(
+            ui.div(
+                ui.h2("📝 Encoding Complete!", style="text-align: center; color: #333; font-weight: 800;"),
+                ui.h1(grade, style=f"color: {gcolor}; text-align: center; font-size: 3.5em; font-weight: 900; margin: 10px 0;"),
+                ui.p("Deep Work Index (DWI)", style="text-align: center; color: gray; text-transform: uppercase; letter-spacing: 1px; font-weight: bold; margin-bottom: 0;"),
+                ui.h3(f"{dwi}%", style="text-align: center; font-weight: 900; margin-top: 5px;"),
+                ui.p(f"⏱️ Session Length: {duration} mins | 📉 Idle warnings: {triggers}", style="text-align: center; color: #6c757d; font-size: 0.9em;"),
+                ui.hr(),
+                ui.h4(f"🌟 +{base_xp + bonus} XP Earned", style="text-align: center; color: #198754; font-weight: bold;")
+            ),
+            easy_close=True, footer=ui.input_action_button("close_sl_summary", "Close", class_="btn-primary w-100")
+        )
+        ui.modal_show(m)
+
+    @reactive.Effect
+    @reactive.event(input.close_sl_summary)
+    def _close_sl_summary():
+        ui.modal_remove()
 
     @reactive.Effect
     @reactive.event(input.save_btn)
@@ -1869,7 +2310,7 @@ def server(input, output, session):
 
     @reactive.Effect
     @reactive.event(input.start_rev_btn)
-    def _start_revision():
+    async def _start_revision():
         if not input.rev_selected_map(): return
         
         # --- LOCK THE SESSION STATE ---
@@ -1888,31 +2329,54 @@ def server(input, output, session):
         current_heading = "General Concept"
         current_answer = []
         in_math, in_code = False, False
+        path_stack = []
         
-        def save_card():
+        def save_node():
             ans_text = "\n".join(current_answer).strip()
-            if ans_text:
-                slides.append({"breadcrumb": current_heading, "raw": ans_text})
+            if ans_text and current_heading:
+                # Combine breadcrumbs for context
+                breadcrumb = " > ".join([p[1] for p in path_stack]) if path_stack else current_heading
+                slides.append({"breadcrumb": breadcrumb, "raw": ans_text})
             current_answer.clear()
 
         for line in lines:
             stripped = line.strip()
             
-            if stripped.startswith("`" * 3): in_code = not in_code
-            if stripped.count("$$") % 2 != 0: in_math = not in_math
+            if stripped.startswith("`" * 3):
+                in_code = not in_code
+            elif stripped == "$$": 
+                in_math = not in_math
+                
+            is_new_node = False
+            level = 0
+            content = ""
             
+            # Only detect new nodes if we are outside of a code/math block
             if not in_math and not in_code:
-                # If we hit a new heading, save the previous card and grab the new question
-                if re.match(r'^\s*#{1,6}\s', line):
-                    save_card()
-                    current_heading = line.lstrip(' #').strip()
-                elif stripped: # Group all bullets/text into the answer
-                    current_answer.append(line.rstrip('\n'))
-            else:
-                if stripped or current_answer:
-                    current_answer.append(line.rstrip('\n'))
+                if re.match(r'^#{1,6}\s', line):
+                    is_new_node = True
+                    level = len(line) - len(line.lstrip('#'))
+                    content = line.lstrip('#').strip()
+                elif re.match(r'^\s*[-*+]\s', line):
+                    is_new_node = True
+                    level = 10 + len(line) - len(line.lstrip())
+                    content = line.strip().lstrip('-*+').strip()
+                elif re.match(r'^\s*\d+\.\s', line):
+                    is_new_node = True
+                    level = 10 + len(line) - len(line.lstrip())
+                    content = re.sub(r'^\s*\d+\.\s*', '', line).strip()
+
+            if is_new_node:
+                save_node() # Wrap up the previous slide
+                
+                # Manage hierarchy
+                while path_stack and path_stack[-1][0] >= level: 
+                    path_stack.pop()
+                path_stack.append((level, content))
+                
+            current_answer.append(line.rstrip("\n"))
             
-        save_card() 
+        save_node() # Catch the last slide
         
         if not slides:
             slides = [{"breadcrumb": "Empty", "raw": "No content found."}]
@@ -1925,6 +2389,7 @@ def server(input, output, session):
         rev_mcq_options.set(generate_mcq_opts(0, slides))
         rev_start_time.set(time.time())
         rev_phase.set("easy") # Start in the low-friction warm-up phase
+        await session.send_custom_message("reset_session_metrics", None)
 
     @reactive.Effect
     @reactive.event(input.mcq_answer)
@@ -2107,8 +2572,16 @@ def server(input, output, session):
             acc = int((correct / total * 100)) if total > 0 else 0
             duration = round((time.time() - rev_start_time()) / 60, 2)
 
+            triggers = input.current_idle_triggers() if 'current_idle_triggers' in input else 0
+            dwi = max(0, 100 - (triggers * 15))
+
+            if acc >= 90 and dwi >= 85: grade, gcolor = "S-Tier", "#198754"
+            elif acc >= 75 and dwi >= 70: grade, gcolor = "A-Grade", "#0dcaf0"
+            elif acc >= 60 and dwi >= 50: grade, gcolor = "B-Grade", "#fd7e14"
+            else: grade, gcolor = "C-Grade", "#dc3545"
+
             acc_color = "#198754" if acc >= 80 else "#fd7e14" if acc >= 50 else "#dc3545"
-            msg = "Outstanding Mastery! 🏆" if acc >= 80 else "Solid Effort! Keep building momentum. 📈" if acc >= 50 else "Great practice. Repetition is key! 💪"
+            msg = f"Outstanding Mastery! You earned an {grade}." if grade in ["S-Tier", "A-Grade"] else "Solid Effort! Focus on your pacing."
 
             return ui.div(
                 ui.h2("🎉 Session Complete!"),
@@ -2120,18 +2593,18 @@ def server(input, output, session):
                         class_="p-3 text-center", style="background: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef;"
                     ),
                     ui.div(
-                        ui.h1(f"{correct}", style="color: #198754; font-weight: 900; margin: 0; font-size: 2.5em;"),
-                        ui.p("Mastered", class_="text-muted", style="text-transform: uppercase; font-size: 0.8em; letter-spacing: 1px; margin-top: 5px;"),
-                        class_="p-3 text-center", style="background: #e8f5e9; border-radius: 8px; border: 1px solid #c3e6cb;"
+                        ui.h1(f"{dwi}%", style=f"color: {gcolor}; font-weight: 900; margin: 0; font-size: 2.5em;"),
+                        ui.p("Engagement (DWI)", class_="text-muted", style="text-transform: uppercase; font-size: 0.8em; letter-spacing: 1px; margin-top: 5px;"),
+                        class_="p-3 text-center", style="background: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef;"
                     ),
                     ui.div(
-                        ui.h1(f"{incorrect}", style="color: #dc3545; font-weight: 900; margin: 0; font-size: 2.5em;"),
-                        ui.p("To Review", class_="text-muted", style="text-transform: uppercase; font-size: 0.8em; letter-spacing: 1px; margin-top: 5px;"),
-                        class_="p-3 text-center", style="background: #f8d7da; border-radius: 8px; border: 1px solid #f5c6cb;"
+                        ui.h1(grade, style=f"color: {gcolor}; font-weight: 900; margin: 0; font-size: 2.5em;"),
+                        ui.p("Session Rank", class_="text-muted", style="text-transform: uppercase; font-size: 0.8em; letter-spacing: 1px; margin-top: 5px;"),
+                        class_="p-3 text-center", style=f"background: {gcolor}15; border-radius: 8px; border: 1px solid {gcolor}44;"
                     ),
                     col_widths=(4, 4, 4)
                 ),
-                ui.p(f"⏱️ Time logged: {duration} mins", class_="text-center mt-4 text-muted", style="font-size: 0.9em; font-weight: bold;"),
+                ui.p(f"⏱️ Time logged: {duration} mins | 📉 Idle warnings: {triggers}", class_="text-center mt-4 text-muted", style="font-size: 0.9em; font-weight: bold;"),
                 ui.hr(),
                 ui.input_action_button("return_setup_btn", "Finish & Return to Hub", class_="btn-primary btn-lg w-100"),
                 class_="card p-4 shadow-sm slide-container", style="display: flex; flex-direction: column; justify-content: center; min-height: 350px;"
@@ -2173,7 +2646,7 @@ def server(input, output, session):
 
     @reactive.Effect
     @reactive.event(input.start_blurt_btn)
-    def _start_blurt():
+    async def _start_blurt():
         if not input.blurt_selected_map(): return
         
         # --- LOCK THE SESSION STATE ---
@@ -2188,13 +2661,31 @@ def server(input, output, session):
         blurt_template.set(template)
         blurt_state.set("blurting")
         blurt_start_time.set(time.time())
+        await session.send_custom_message("reset_session_metrics", None)
 
     @reactive.Effect
     @reactive.event(input.review_blurt_btn)
-    def _review_blurt():
+    async def _review_blurt():
         if blurt_state() == "blurting":
             blurt_state.set("review")
             duration = round((time.time() - blurt_start_time()) / 60, 2)
+            
+            orig_text = blurt_original()
+            blurt_text = input.blurt_input()
+            
+            chunks = extract_source_chunks(orig_text)
+            
+            def compute():
+                if SEMANTIC_MODEL is None:
+                    return 0.0, chunks
+                return compute_semantic_coverage(chunks, blurt_text)
+
+            pct, annotated = await asyncio.to_thread(compute)
+            blurt_coverage_pct.set(pct)
+            blurt_coverage_data.set(annotated)
+            
+            score_pct = int(pct * 100)
+            
             df = load_revisions()
             new_row = pd.DataFrame({
                 "Module": [blurt_active_mod()], 
@@ -2205,12 +2696,25 @@ def server(input, output, session):
             })
             pd.concat([df, new_row], ignore_index=True).to_csv(REV_LOG, index=False)
             
-            # Dopamine Hook: Massive XP for Blurting & Check Quests
-            grant_xp(100)
+            # --- SEMANTIC ANALYSIS & SCALED REWARDS ---
+            base_xp = 100
+            triggers = input.current_idle_triggers() if 'current_idle_triggers' in input else 0
+            dwi = max(0, 100 - (triggers * 15))
+            if dwi >= 85: 
+                base_xp += 50
+                ui.notification_show(f"Laser Focus Bonus! +50 XP", type="message")
+
+            if score_pct >= 90:
+                grant_xp(base_xp + 150)
+                ui.notification_show(f"Flawless Synthesis! {score_pct}% Core Concepts Captured. +250 XP 🧠🌟", type="message")
+            elif score_pct >= 70:
+                grant_xp(base_xp + 50)
+                ui.notification_show(f"Great Blurt! {score_pct}% Core Concepts Captured. +150 XP 🧠", type="message")
+            else:
+                grant_xp(base_xp)
+                ui.notification_show(f"Blurt Complete! {score_pct}% Coverage. Keep practicing! +100 XP", type="message")
+            
             check_quest_completion("Blurt", duration=duration)
-            
-            ui.notification_show("Massive Cognitive Effort! +100 XP 🧠🌟", type="message")
-            
             refresh_trigger.set(refresh_trigger() + 1)
 
     @reactive.Effect
@@ -2228,12 +2732,34 @@ def server(input, output, session):
             await session.send_custom_message("render_katex", None)
             
             blurt_in_val = protect_math(input.blurt_input())
-            blurt_orig_val = protect_math(blurt_original())
             
-            return ui.layout_columns(
-                ui.card(ui.card_header("✍️ Your Blurt"), ui.div(ui.markdown(blurt_in_val), class_="blurt-review-panel")),
-                ui.card(ui.card_header("📚 Original"), ui.div(ui.markdown(blurt_orig_val), class_="blurt-review-panel")),
-                col_widths=(6, 6)
+            # Retrieve the pre-computed semantic results
+            score_pct = int(blurt_coverage_pct() * 100)
+            
+            triggers = input.current_idle_triggers() if 'current_idle_triggers' in input else 0
+            dwi = max(0, 100 - (triggers * 15))
+            
+            annotated_orig_html = render_fog_of_war_html(blurt_coverage_data())
+            if not annotated_orig_html:
+                annotated_orig_html = protect_math(blurt_original())
+                
+            score_color = '#198754' if score_pct >= 80 else '#fd7e14' if score_pct >= 50 else '#dc3545'
+            
+            return ui.div(
+                ui.div(
+                    ui.h3("🧠 Semantic Analysis", class_="text-center mb-3", style="font-weight: 800;"),
+                    ui.layout_columns(
+                        ui.div(ui.tags.b("🎯 Semantic Coverage:"), ui.h3(f"{score_pct}%", style=f"font-weight: 900; color: {score_color}; margin-bottom: 0;"), class_="p-3 border rounded bg-white shadow-sm text-center"),
+                        ui.div(ui.tags.b("⚡ Engagement (DWI):"), ui.h3(f"{dwi}%", style="font-weight: 900; color: #0d6efd; margin-bottom: 0;"), ui.p(f"{triggers} idle breaks", style="font-size: 0.8em; color: gray; margin-bottom: 0;"), class_="p-3 border rounded bg-white shadow-sm text-center"),
+                        col_widths=(6, 6)
+                    ),
+                    class_="mb-4 p-4 card shadow-sm", style="background: #f8f9fa;"
+                ),
+                ui.layout_columns(
+                    ui.card(ui.card_header("✍️ Your Blurt"), ui.div(ui.markdown(blurt_in_val), class_="blurt-review-panel")),
+                    ui.card(ui.card_header("🧠 Semantic Evaluation (Original)"), ui.div(ui.HTML(annotated_orig_html), class_="blurt-review-panel")),
+                    col_widths=(6, 6)
+                )
             )
 
 app = App(app_ui, server, static_assets={"/files": BASE_PATH})
