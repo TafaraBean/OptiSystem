@@ -611,6 +611,33 @@ def extract_source_chunks(text: str, sentences_per_chunk: int = 2) -> list[dict]
         })
     return chunks
 
+def extract_qa_blocks(markdown_text: str) -> dict:
+    """Isolates specific Question & Answer blocks based on markdown headers."""
+    blocks = {}
+    current_q = "General Concepts"
+    current_a = []
+    has_headers = False
+    
+    for line in markdown_text.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            has_headers = True
+            if current_a:
+                blocks[current_q] = '\n'.join(current_a).strip()
+            current_q = stripped.lstrip('#').strip()
+            current_a = []
+        else:
+            current_a.append(line)
+            
+    if current_a:
+        blocks[current_q] = '\n'.join(current_a).strip()
+        
+    # Remove dummy header if explicit # headers were used
+    if has_headers and "General Concepts" in blocks and not blocks["General Concepts"].strip():
+        del blocks["General Concepts"]
+        
+    return blocks
+
 def extract_pdf_chunks(pdf_path: str) -> list[dict]:
     """Extract semantic chunks from PDF, retaining page number."""
     if fitz is None: return []
@@ -691,6 +718,80 @@ def compute_semantic_coverage(
     pct = (covered_weight / total_weight) if total_weight > 0 else 0.0
     return round(pct, 3), annotated
 
+def compute_blurt_coverage(
+    orig_text: str,
+    blurt_text: str,
+    covered_threshold: float = 0.82,  # Ultra-strict threshold for active recall
+    partial_threshold: float = 0.72
+) -> tuple[float, list[dict]]:
+    """
+    Direct Answer-to-Answer comparison. Isolates each question block to prevent semantic cross-pollination.
+    """
+    if not orig_text.strip() or SEMANTIC_MODEL is None:
+        return 0.0, []
+
+    orig_qa = extract_qa_blocks(orig_text)
+    blurt_qa = extract_qa_blocks(blurt_text)
+
+    all_annotated = []
+    total_weight = 0.0
+    covered_weight = 0.0
+
+    for q, orig_ans in orig_qa.items():
+        # Inject the header explicitly for UI rendering
+        all_annotated.append({"text": f"### {q}", "status": "header", "coverage_score": 1.0})
+
+        user_ans = blurt_qa.get(q, "")
+        
+        source_chunks = extract_source_chunks(orig_ans)
+        if not source_chunks:
+            continue
+            
+        word_count = len(re.findall(r'\b[a-zA-Z]{3,}\b', user_ans))
+        is_gibberish = word_count < 3
+
+        if is_gibberish:
+            for chunk in source_chunks:
+                all_annotated.append({**chunk, "coverage_score": 0.0, "status": "missing"})
+                total_weight += 1.0
+            continue
+
+        # Encode isolated Source chunks
+        source_texts = [c["text"] for c in source_chunks]
+        source_embs = SEMANTIC_MODEL.encode(source_texts, convert_to_tensor=True, normalize_embeddings=True)
+
+        # Encode isolated User chunks
+        raw_note_sentences = [s.strip() for s in re.split(r'(?<=[.!?\n])\s+', user_ans) if len(s.split()) > 3]
+        if not raw_note_sentences:
+            raw_note_sentences = [user_ans]
+
+        note_chunks = []
+        for i in range(len(raw_note_sentences)):
+            window = raw_note_sentences[i : i + 2] 
+            note_chunks.append(' '.join(window))
+
+        note_embs = SEMANTIC_MODEL.encode(note_chunks, convert_to_tensor=True, normalize_embeddings=True)
+
+        # Strictly compare ONLY within this Q&A block
+        sim_matrix = util.cos_sim(source_embs, note_embs)
+        best_scores = sim_matrix.max(dim=1).values.tolist()
+
+        for chunk, score in zip(source_chunks, best_scores):
+            total_weight += 1.0
+            if score >= covered_threshold:
+                status = 'covered'
+                covered_weight += 1.0
+            elif score >= partial_threshold:
+                status = 'partial'
+                covered_weight += 0.4
+            else:
+                status = 'missing'
+
+            all_annotated.append({**chunk, "coverage_score": round(score, 3), "status": status})
+
+    pct = (covered_weight / total_weight) if total_weight > 0 else 0.0
+    return round(pct, 3), all_annotated
+
 def render_fog_of_war_html(annotated_chunks: list[dict]) -> str:
     """Renders source text with coverage overlays."""
     if not annotated_chunks:
@@ -702,6 +803,10 @@ def render_fog_of_war_html(annotated_chunks: list[dict]) -> str:
         status = chunk.get("status", "missing")
         score = chunk.get("coverage_score", 0)
         
+        if status == "header":
+            parts.append(f'<div style="margin-top: 20px; margin-bottom: 10px; font-weight: 800; font-size: 1.2em; color: #2c3e50; border-bottom: 2px solid #dee2e6; padding-bottom: 5px;">{chunk["text"]}</div>')
+            continue
+            
         if status == "covered":
             style = "background: rgba(25,135,84,0.12); border-left: 3px solid #198754; opacity: 1.0;"
             icon = "✅"
@@ -1454,12 +1559,11 @@ def server(input, output, session):
             orig_text = blurt_original()
             blurt_text = input.blurt_input()
             
-            chunks = extract_source_chunks(orig_text)
-            
             def compute():
                 if SEMANTIC_MODEL is None:
-                    return 0.0, chunks
-                return compute_semantic_coverage(chunks, blurt_text)
+                    return 0.0, []
+                # Pass directly to the new isolated Q&A evaluator
+                return compute_blurt_coverage(orig_text, blurt_text)
 
             pct, annotated = await asyncio.to_thread(compute)
             blurt_coverage_pct.set(pct)
