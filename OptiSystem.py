@@ -8,6 +8,8 @@ import random
 import asyncio
 import threading
 from datetime import datetime
+import numpy as np
+from scipy.optimize import linear_sum_assignment
 from shiny import App, render, ui, reactive
 
 # --- ML DEPENDENCIES ---
@@ -47,7 +49,11 @@ if not os.path.exists(BASE_PATH):
 QUEST_POOL = [
     {"id": "q_read_15",  "desc": "Read & Annotate for 15+ mins", "xp": 300, "type": "duration", "target": 15, "activity": "Reading"},
     {"id": "q_blurt_1",  "desc": "Complete a Blurt session",     "xp": 250, "type": "activity", "target": 1,  "activity": "Blurt"},
-    {"id": "q_blurt_80", "desc": "Achieve 80%+ coverage in Blurt","xp": 400, "type": "accuracy", "target": 0.80,"activity": "Blurt"}
+    {"id": "q_blurt_80", "desc": "Achieve 80%+ coverage in Blurt","xp": 400, "type": "accuracy", "target": 0.80,"activity": "Blurt"},
+    {"id": "q_read_30",  "desc": "Deep Reading for 30+ mins",    "xp": 500, "type": "duration", "target": 30, "activity": "Reading"},
+    {"id": "q_blurt_2",  "desc": "Complete 2 Blurt sessions",    "xp": 450, "type": "activity", "target": 2,  "activity": "Blurt"},
+    {"id": "q_blurt_90", "desc": "Mastery: 90%+ in Blurt",       "xp": 600, "type": "accuracy", "target": 0.90,"activity": "Blurt"},
+    {"id": "q_read_5",   "desc": "Quick 5-min Reading sprint",   "xp": 100, "type": "duration", "target": 5,  "activity": "Reading"}
 ]
 
 def get_daily_quests():
@@ -140,7 +146,7 @@ custom_js = """
         transition: all 0.4s ease;
         box-shadow: 0 0 8px rgba(0, 217, 126, 0.1);
     }
-    
+
     /* Focus Depletion Bar */
     #focus-bar-track {
         position: fixed; top: 0; left: 0; width: 100%; height: 7px;
@@ -632,7 +638,6 @@ def extract_qa_blocks(markdown_text: str) -> dict:
     if current_a:
         blocks[current_q] = '\n'.join(current_a).strip()
         
-    # Remove dummy header if explicit # headers were used
     if has_headers and "General Concepts" in blocks and not blocks["General Concepts"].strip():
         del blocks["General Concepts"]
         
@@ -673,17 +678,14 @@ def compute_semantic_coverage(
     if not source_chunks or not note_text.strip() or SEMANTIC_MODEL is None:
         return 0.0, source_chunks
     
-    # 1. The Gibberish Gatekeeper
     word_count = len(re.findall(r'\b[a-zA-Z]{3,}\b', note_text))
     if word_count < 5:
         annotated = [{**chunk, "coverage_score": 0.0, "status": "missing"} for chunk in source_chunks]
         return 0.0, annotated
     
-    # 2. Encode Source Text
     source_texts = [c["text"] for c in source_chunks]
     source_embs = SEMANTIC_MODEL.encode(source_texts, convert_to_tensor=True, normalize_embeddings=True)
     
-    # 3. Contextual Note Chunking
     raw_note_sentences = [s.strip() for s in re.split(r'(?<=[.!?\n])\s+', note_text) if len(s.split()) > 3]
     if not raw_note_sentences:
         raw_note_sentences = [note_text]
@@ -695,7 +697,6 @@ def compute_semantic_coverage(
         
     note_embs = SEMANTIC_MODEL.encode(note_chunks, convert_to_tensor=True, normalize_embeddings=True)
     
-    # 4. Compare and Score
     sim_matrix = util.cos_sim(source_embs, note_embs)
     best_scores = sim_matrix.max(dim=1).values.tolist()
     
@@ -709,7 +710,7 @@ def compute_semantic_coverage(
             covered_weight += 1.0
         elif score >= partial_threshold:
             status = 'partial'
-            covered_weight += 0.4   # Nerfed to heavily penalize weak matches
+            covered_weight += 0.4
         else:
             status = 'missing'
         
@@ -721,7 +722,7 @@ def compute_semantic_coverage(
 def compute_blurt_coverage(
     orig_text: str,
     blurt_text: str,
-    covered_threshold: float = 0.82,  # Ultra-strict threshold for active recall
+    covered_threshold: float = 0.82,  # Strict threshold for active recall
     partial_threshold: float = 0.72
 ) -> tuple[float, list[dict]]:
     """
@@ -738,7 +739,6 @@ def compute_blurt_coverage(
     covered_weight = 0.0
 
     for q, orig_ans in orig_qa.items():
-        # Inject the header explicitly for UI rendering
         all_annotated.append({"text": f"### {q}", "status": "header", "coverage_score": 1.0})
 
         user_ans = blurt_qa.get(q, "")
@@ -756,11 +756,9 @@ def compute_blurt_coverage(
                 total_weight += 1.0
             continue
 
-        # Encode isolated Source chunks
         source_texts = [c["text"] for c in source_chunks]
         source_embs = SEMANTIC_MODEL.encode(source_texts, convert_to_tensor=True, normalize_embeddings=True)
 
-        # Encode isolated User chunks
         raw_note_sentences = [s.strip() for s in re.split(r'(?<=[.!?\n])\s+', user_ans) if len(s.split()) > 3]
         if not raw_note_sentences:
             raw_note_sentences = [user_ans]
@@ -770,11 +768,26 @@ def compute_blurt_coverage(
             window = raw_note_sentences[i : i + 2] 
             note_chunks.append(' '.join(window))
 
+        # Cap note chunks to prevent note-length bias
+        note_chunks = note_chunks[:min(len(note_chunks), len(source_chunks) * 2)]
+
         note_embs = SEMANTIC_MODEL.encode(note_chunks, convert_to_tensor=True, normalize_embeddings=True)
 
-        # Strictly compare ONLY within this Q&A block
         sim_matrix = util.cos_sim(source_embs, note_embs)
-        best_scores = sim_matrix.max(dim=1).values.tolist()
+        
+        # 1-to-1 Hungarian Assignment to prevent many-to-one keyword pooling
+        sim_np = sim_matrix.cpu().numpy()
+        n_src, n_note = sim_np.shape
+        if n_note < n_src:
+            sim_np = np.pad(sim_np, ((0,0),(0, n_src - n_note)))
+            
+        row_ind, col_ind = linear_sum_assignment(-sim_np)
+        assigned_scores = np.zeros(n_src)
+        for r, c in zip(row_ind, col_ind):
+            if r < n_src and c < n_note:
+                assigned_scores[r] = sim_matrix[r, c].item()
+                
+        best_scores = assigned_scores.tolist()
 
         for chunk, score in zip(source_chunks, best_scores):
             total_weight += 1.0
@@ -1562,7 +1575,6 @@ def server(input, output, session):
             def compute():
                 if SEMANTIC_MODEL is None:
                     return 0.0, []
-                # Pass directly to the new isolated Q&A evaluator
                 return compute_blurt_coverage(orig_text, blurt_text)
 
             pct, annotated = await asyncio.to_thread(compute)
