@@ -146,7 +146,11 @@ custom_js = """
         box-shadow: 0 0 8px rgba(0, 217, 126, 0.1);
     }
 
+<<<<<<< HEAD
     /* Focus Depletion Bar - Hardened CSS */
+=======
+    /* Focus Depletion Bar */
+>>>>>>> 8fcafac0ebc6dc31fb9bf1169420366a4a4034ae
     #focus-bar-track {
         display: block !important;
         position: fixed !important; 
@@ -1017,8 +1021,25 @@ def compute_semantic_coverage(
     Strict Soft-margin semantic coverage with Context Windows + Spatial Coverage Override.
     Returns (coverage_pct, annotated_chunks)
     """
+<<<<<<< HEAD
     if not source_chunks:
         return 0.0, []
+=======
+    if not source_chunks or not note_text.strip() or SEMANTIC_MODEL is None:
+        return 0.0, source_chunks
+    
+    word_count = len(re.findall(r'\b[a-zA-Z]{3,}\b', note_text))
+    if word_count < 5:
+        annotated = [{**chunk, "coverage_score": 0.0, "status": "missing"} for chunk in source_chunks]
+        return 0.0, annotated
+    
+    source_texts = [c["text"] for c in source_chunks]
+    source_embs = SEMANTIC_MODEL.encode(source_texts, convert_to_tensor=True, normalize_embeddings=True)
+    
+    raw_note_sentences = [s.strip() for s in re.split(r'(?<=[.!?\n])\s+', note_text) if len(s.split()) > 3]
+    if not raw_note_sentences:
+        raw_note_sentences = [note_text]
+>>>>>>> 8fcafac0ebc6dc31fb9bf1169420366a4a4034ae
         
     note_str = note_text.strip() if note_text else ""
     word_count = len(re.findall(r'\b[a-zA-Z]{3,}\b', note_str))
@@ -1029,6 +1050,7 @@ def compute_semantic_coverage(
         source_texts = [c["text"] for c in source_chunks]
         source_embs = SEMANTIC_MODEL.encode(source_texts, convert_to_tensor=True, normalize_embeddings=True)
         
+<<<<<<< HEAD
         raw_note_sentences = [s.strip() for s in re.split(r'(?<=[.!?\n])\s+', note_str) if len(s.split()) > 3]
         if not raw_note_sentences:
             raw_note_sentences = [note_str]
@@ -1045,14 +1067,33 @@ def compute_semantic_coverage(
     else:
         semantic_scores = [0.0] * len(source_chunks)
 
+=======
+    note_embs = SEMANTIC_MODEL.encode(note_chunks, convert_to_tensor=True, normalize_embeddings=True)
+    
+    sim_matrix = util.cos_sim(source_embs, note_embs)
+    best_scores = sim_matrix.max(dim=1).values.tolist()
+    
+>>>>>>> 8fcafac0ebc6dc31fb9bf1169420366a4a4034ae
     annotated = []
     covered_weight = 0.0
     total_weight = len(source_chunks)
     spatial = spatial_rects or {}
     
+<<<<<<< HEAD
     for chunk, sem_score in zip(source_chunks, semantic_scores):
         page = chunk.get("page")
         spatial_covered = False
+=======
+    for chunk, score in zip(source_chunks, best_scores):
+        if score >= covered_threshold:
+            status = 'covered'
+            covered_weight += 1.0
+        elif score >= partial_threshold:
+            status = 'partial'
+            covered_weight += 0.4
+        else:
+            status = 'missing'
+>>>>>>> 8fcafac0ebc6dc31fb9bf1169420366a4a4034ae
         
         # 1. Spatial Override Check
         if page is not None and page in spatial:
